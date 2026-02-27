@@ -64,11 +64,10 @@ class Config:
     ]
     
     INCREMENTAL_SESSIONS = [
-        {"id": 1, "noise": "volvo.wav", "name": "volvo"},
-        {"id": 2, "noise": "f16.wav", "name": "f16"},
-        {"id": 3, "noise": "m109.wav", "name": "m109"},
-        {"id": 4, "noise": "destroyerops.wav", "name": "destroyerops"},
-        {"id": 5, "noise": "machinegun.wav", "name": "machinegun"},
+        {"id": 1, "noise": "alarm.wav", "name": "alarm"},          # ESC-50 clock_alarm
+        {"id": 2, "noise": "cough.wav", "name": "cough"},          # ESC-50 coughing
+        {"id": 3, "noise": "destroyerops.wav", "name": "destroyerops"},  # NOISEX-92
+        {"id": 4, "noise": "machinegun.wav", "name": "machinegun"},      # NOISEX-92
     ]
     
     # ========== REPRODUCIBILITY ==========

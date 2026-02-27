@@ -272,8 +272,8 @@ class SepFormer(nn.Module):
         
         This is the full SepFormer from the paper.
         """
-        # Encoder
-        self.encoder = Conv1d(
+        # Encoder - Use standard PyTorch Conv1d since SpeechBrain Conv1d has different API
+        self.encoder = nn.Conv1d(
             in_channels=1,
             out_channels=n_basis,
             kernel_size=kernel_size,
@@ -281,7 +281,7 @@ class SepFormer(nn.Module):
             padding=kernel_size // 2
         )
         
-        # Masking Network (Dual-Path Transformer)
+        # Masking Network (Dual-Path Transformer) - This is the key component from paper
         self.masking_network = Dual_Path_Model(
             in_channels=n_basis,
             out_channels=n_basis,
@@ -295,7 +295,7 @@ class SepFormer(nn.Module):
             linear_layer_after_inter_intra=False
         )
         
-        # Decoder
+        # Decoder - Use standard PyTorch
         self.decoder = nn.ConvTranspose1d(
             in_channels=n_basis,
             out_channels=1,
@@ -379,9 +379,12 @@ class SepFormer(nn.Module):
         
         Paper: "Masking network: θ^0 (frozen after pre-training)"
         """
-        for param in self.masking_network.parameters():
-            param.requires_grad = False
-        print("Masking network frozen (θ^0)")
+        if self.masking_network is not None:
+            for param in self.masking_network.parameters():
+                param.requires_grad = False
+            print("Masking network frozen (θ^0)")
+        else:
+            print("Masking network not present (using adapter layers instead)")
     
     def freeze_backbone(self):
         """

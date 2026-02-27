@@ -8,6 +8,7 @@ Evaluates on cumulative test sets Z^{1,...,t}
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
 import argparse
@@ -22,12 +23,73 @@ from ..selectors.noise_selector import create_selector
 from ..utils.config import ProjectConfig, get_default_config
 
 
+def _forward_with_chunking(
+    model: torch.nn.Module,
+    noisy: torch.Tensor,
+    session_id: int,
+    chunk_size: int = 32000,
+    chunk_overlap: int = 8000
+) -> torch.Tensor:
+    """
+    Forward pass with chunking for memory efficiency
+    
+    Args:
+        model: The model
+        noisy: Input audio [1, 1, T]
+        session_id: Session ID for decoder selection
+        chunk_size: Chunk size in samples
+        chunk_overlap: Overlap between chunks
+    
+    Returns:
+        Enhanced audio
+    """
+    if noisy.shape[0] != 1:
+        return model(noisy, session_id=session_id)
+    
+    total_len = noisy.shape[-1]
+    if total_len <= chunk_size:
+        return model(noisy, session_id=session_id)
+    
+    step = chunk_size - chunk_overlap
+    if step <= 0:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+    
+    device = noisy.device
+    # Use Hann window for smooth blending (prevents clicks in PESQ)
+    window = torch.hann_window(chunk_size, device=device)
+    window = window.view(1, 1, -1)
+    
+    out_len = ((total_len - 1) // step) * step + chunk_size
+    acc = torch.zeros((1, 1, out_len), device=device)
+    weight = torch.zeros((1, 1, out_len), device=device)
+    
+    for start in range(0, out_len, step):
+        if start >= total_len:
+            break
+        end = start + chunk_size
+        chunk = noisy[..., start:min(end, total_len)]
+        if chunk.shape[-1] < chunk_size:
+            pad_len = chunk_size - chunk.shape[-1]
+            chunk = F.pad(chunk, (0, pad_len))
+        
+        enhanced_chunk = model(chunk, session_id=session_id)
+        
+        acc[..., start:end] += enhanced_chunk * window
+        weight[..., start:end] += window
+    
+    enhanced = acc / weight.clamp_min(1e-8)
+    return enhanced[..., :total_len]
+
+
 def evaluate_model_on_session(
     model: LNAModel,
     test_loader,
     session_id: int,
     device: str = 'cuda',
-    selector = None
+    selector = None,
+    use_chunking: bool = True,
+    chunk_size: int = 32000,
+    chunk_overlap: int = 8000
 ) -> Dict[str, float]:
     """
     Evaluate model on one session's test set
@@ -38,6 +100,9 @@ def evaluate_model_on_session(
         session_id: Session ID
         device: Device to use
         selector: Noise selector (if using)
+        use_chunking: Whether to use chunked inference
+        chunk_size: Chunk size for chunked inference
+        chunk_overlap: Overlap for chunked inference
     
     Returns:
         Dictionary with metrics
@@ -62,32 +127,55 @@ def evaluate_model_on_session(
             # If using selector, predict domain
             if selector:
                 features = model.get_encoder_features(noisy)
-                features_pooled = torch.mean(features, dim=2).cpu().numpy()
+                B_feat, N_feat, L_feat = features.shape
+                enc_lengths = lengths // 8 + 1  # encoder stride=8, padding=8, kernel=16
                 
                 for i in range(len(noisy)):
-                    predicted_session = selector.predict(features_pooled[i])
+                    real_len = min(enc_lengths[i].item(), L_feat)
+                    feat_pooled = features[i, :, :real_len].mean(dim=1).cpu().numpy()
+                    predicted_session = selector.predict(feat_pooled)
                     
                     # Track selector accuracy
                     if predicted_session == session_id:
                         selector_correct += 1
                     selector_total += 1
                     
-                    # Use predicted session's decoder
-                    enhanced = model(noisy[i:i+1], session_id=predicted_session)
+                    # Use predicted session's decoder with chunking if needed
+                    if use_chunking:
+                        enhanced = _forward_with_chunking(
+                            model, noisy[i:i+1], predicted_session,
+                            chunk_size, chunk_overlap
+                        )
+                    else:
+                        enhanced = model(noisy[i:i+1], session_id=predicted_session)
                     
-                    # Calculate metrics
+                    # Trim to actual length (remove batch padding)
+                    L = lengths[i].item()
+                    enhanced_trimmed = enhanced[0, 0, :L]  # [T]
+                    clean_trimmed = clean[i, 0, :L]        # [T]
+                    
                     sample_metrics = metrics_calc.calculate_all(
-                        enhanced.squeeze(), clean[i, :lengths[i]]
+                        enhanced_trimmed, clean_trimmed
                     )
                     all_metrics.append(sample_metrics)
             else:
                 # Use specified session decoder
-                enhanced = model(noisy, session_id=session_id)
-                
-                # Calculate metrics for batch
                 for i in range(len(noisy)):
+                    if use_chunking:
+                        enhanced = _forward_with_chunking(
+                            model, noisy[i:i+1], session_id,
+                            chunk_size, chunk_overlap
+                        )
+                    else:
+                        enhanced = model(noisy[i:i+1], session_id=session_id)
+                    
+                    # Trim to actual length (remove batch padding)
+                    L = lengths[i].item()
+                    enhanced_trimmed = enhanced[0, 0, :L]  # [T]
+                    clean_trimmed = clean[i, 0, :L]        # [T]
+                    
                     sample_metrics = metrics_calc.calculate_all(
-                        enhanced[i, :lengths[i]], clean[i, :lengths[i]]
+                        enhanced_trimmed, clean_trimmed
                     )
                     all_metrics.append(sample_metrics)
     
@@ -145,6 +233,16 @@ def evaluate_cumulative(
         adapter_bottleneck_dim=config.adapter.bottleneck_dim,
         max_sessions=6
     )
+    
+    # Recreate adapters for all incremental sessions before loading checkpoint
+    print("Recreating adapter structure for all sessions...")
+    for session_id in session_ids:
+        if session_id > 0:  # Skip session 0 (pre-training)
+            model.add_new_session(
+                session_id=session_id,
+                bottleneck_dim=config.adapter.bottleneck_dim
+            )
+    
     model.load_checkpoint(model_path)
     
     # Load selector
@@ -291,7 +389,7 @@ def main():
         "--sessions",
         type=int,
         nargs='+',
-        default=[0, 1, 2, 3, 4, 5],
+        default=[1, 2, 3, 4],
         help="Session IDs to evaluate"
     )
     parser.add_argument(

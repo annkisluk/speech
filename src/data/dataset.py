@@ -265,7 +265,8 @@ def create_dataloader(
     batch_size: int,
     shuffle: bool = True,
     num_workers: int = 2,
-    pin_memory: bool = False
+    pin_memory: bool = False,
+    prefetch_factor: int = 2
 ) -> DataLoader:
     """
     Create DataLoader with appropriate settings
@@ -280,6 +281,7 @@ def create_dataloader(
     Returns:
         DataLoader instance
     """
+    use_persistent_workers = num_workers > 0
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -287,7 +289,9 @@ def create_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn,
-        drop_last=False  # Keep all samples
+        drop_last=False,  # Keep all samples
+        persistent_workers=use_persistent_workers,
+        prefetch_factor=prefetch_factor if use_persistent_workers else None
     )
 
 
@@ -300,6 +304,7 @@ def get_session_dataloaders(
     batch_size_val: int = 4,
     batch_size_test: int = 4,
     num_workers: int = 2,
+    pin_memory: bool = False,
     sample_rate: int = 8000
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
@@ -351,24 +356,24 @@ def get_session_dataloaders(
         train_dataset,
         batch_size=batch_size_train,
         shuffle=True,
-        num_workers=2,
-        pin_memory=False
+        num_workers=num_workers,
+        pin_memory=pin_memory
     )
 
     val_loader = create_dataloader(
         val_dataset,
         batch_size=batch_size_val,
         shuffle=False,
-        num_workers=2,
-        pin_memory=False
+        num_workers=num_workers,
+        pin_memory=pin_memory
     )
 
     test_loader = create_dataloader(
         test_dataset,
         batch_size=batch_size_test,
         shuffle=False,
-        num_workers=2,
-        pin_memory=False
+        num_workers=num_workers,
+        pin_memory=pin_memory
     )
     
     return train_loader, val_loader, test_loader

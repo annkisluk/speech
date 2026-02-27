@@ -25,7 +25,8 @@ def train_incremental_session(
     session_id: int,
     pretrained_model_path: str,
     data_root: str = "data/final_data",
-    selector_path: str = None
+    selector_path: str = None,
+    resume_from: str = None
 ):
     """
     Train incremental session
@@ -56,6 +57,13 @@ def train_incremental_session(
     print(f"Device: {device}")
     print(f"Session ID: {session_id}")
     print(f"Data root: {data_root}")
+    
+    # Verify CUDA is working
+    if device == 'cuda':
+        n_gpus = torch.cuda.device_count()
+        print(f"CUDA Devices Available: {n_gpus}")
+        for i in range(n_gpus):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB)")
     print()
     
     # Load pre-trained model
@@ -70,6 +78,16 @@ def train_incremental_session(
         adapter_bottleneck_dim=config.adapter.bottleneck_dim,
         max_sessions=6
     )
+    
+    # For incremental sessions > 1, recreate previous sessions' adapters
+    # before loading checkpoint so state_dict keys match
+    if session_id > 1:
+        print(f"  Recreating adapters for sessions 1 to {session_id - 1}...")
+        for prev_session in range(1, session_id):
+            model.add_new_session(
+                session_id=prev_session,
+                bottleneck_dim=config.adapter.bottleneck_dim
+            )
     
     checkpoint = model.load_checkpoint(pretrained_model_path)
     print(f"  Loaded from: {pretrained_model_path}")
@@ -94,6 +112,12 @@ def train_incremental_session(
     print(f"  Adapter parameters: {adapter_info['adapter_parameters']:,}")
     print(f"  Adapter percentage: {adapter_info['adapter_percentage']:.2f}%")
     
+    # Enable multi-GPU training with DataParallel (after model configuration)
+    if device == 'cuda' and torch.cuda.device_count() > 1:
+        print(f"\nUsing DataParallel with {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+        print(f"  Training will be parallelized across GPUs: {list(range(torch.cuda.device_count()))}")
+    
     # Create dataloaders
     print(f"\nLoading Session {session_id} data...")
     train_loader, val_loader, test_loader = get_session_dataloaders(
@@ -103,6 +127,7 @@ def train_incremental_session(
         batch_size_val=config.data.val_batch_size,
         batch_size_test=config.data.test_batch_size,
         num_workers=config.data.num_workers,
+        pin_memory=config.data.pin_memory,
         sample_rate=config.data.sample_rate
     )
     
@@ -119,7 +144,20 @@ def train_incremental_session(
         optimizer_type=config.training.optimizer
     )
     
-    print(f"  Trainable parameters: {model.get_num_parameters(trainable_only=True):,}")
+    # Get trainable parameter count (unwrap DataParallel if needed)
+    model_for_check = model.module if isinstance(model, torch.nn.DataParallel) else model
+    print(f"  Trainable parameters: {model_for_check.get_num_parameters(trainable_only=True):,}")
+    
+    # CRITICAL: Verify backbone is actually frozen
+    print("\n  Verifying freezing configuration:")
+    backbone_frozen = not any(p.requires_grad for p in model_for_check.sepformer.parameters())
+    print(f"    ✓ Backbone frozen: {backbone_frozen}")
+    
+    # Count trainable params by type
+    adapter_trainable = sum(p.numel() for p in model_for_check.adapter_layers.parameters() if p.requires_grad)
+    decoder_trainable = sum(p.numel() for p in model_for_check.decoders[f'session_{session_id}'].parameters() if p.requires_grad)
+    print(f"    ✓ Trainable adapter params: {adapter_trainable:,}")
+    print(f"    ✓ Trainable decoder params: {decoder_trainable:,}")
     
     # Setup scheduler
     scheduler = None
@@ -142,9 +180,22 @@ def train_incremental_session(
         scheduler=scheduler,
         use_amp=config.training.use_amp,
         log_dir=str(log_dir),
-        checkpoint_dir=str(checkpoint_dir)
+        checkpoint_dir=str(checkpoint_dir),
+        max_grad_norm=config.training.max_grad_norm
     )
     
+    # Verify model is on correct device
+    model_for_check = trainer.model.module if isinstance(trainer.model, torch.nn.DataParallel) else trainer.model
+    print(f"\n✓ Model device: {next(model_for_check.parameters()).device}")
+    print(f"✓ Training will use: {trainer.device}")
+    if isinstance(trainer.model, torch.nn.DataParallel):
+        print(f"✓ Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
+    
+    # Resume from checkpoint if specified
+    if resume_from:
+        print(f"\nResuming from checkpoint: {resume_from}")
+        trainer.load_checkpoint(Path(resume_from))
+
     # Train
     print("\n" + "="*80)
     print("STARTING INCREMENTAL TRAINING".center(80))
@@ -167,7 +218,9 @@ def train_incremental_session(
     
     # Save model
     model_checkpoint_path = checkpoint_dir / f"lna_session{session_id}.pt"
-    model.save_checkpoint(
+    # Handle DataParallel: unwrap model if needed
+    model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
+    model_to_save.save_checkpoint(
         str(model_checkpoint_path),
         session_id=session_id
     )
@@ -192,16 +245,28 @@ def train_incremental_session(
         selector.load(selector_path)
     else:
         print(f"Creating new {config.selector.selector_type} selector")
+        # Build kwargs based on selector type
+        selector_kwargs = {'feature_dim': config.sepformer.N}
+        if config.selector.selector_type == 'kmeans':
+            selector_kwargs['n_clusters'] = config.selector.n_clusters
+        elif config.selector.selector_type == 'meanshift':
+            if config.selector.bandwidth is not None:
+                selector_kwargs['bandwidth'] = config.selector.bandwidth
+        elif config.selector.selector_type == 'gmm':
+            selector_kwargs['n_components'] = config.selector.n_components
+            selector_kwargs['covariance_type'] = config.selector.covariance_type
+        
         selector = create_selector(
             selector_type=config.selector.selector_type,
-            feature_dim=config.sepformer.N,
-            n_clusters=config.selector.n_clusters if config.selector.selector_type == 'kmeans' else None,
-            bandwidth=config.selector.bandwidth if config.selector.selector_type == 'meanshift' else None
+            **selector_kwargs
         )
     
     # Extract features from training data
     print(f"\nExtracting features for session {session_id}...")
     model.eval()
+    
+    # Get the actual model (unwrap if DataParallel)
+    model_for_features = model.module if isinstance(model, torch.nn.DataParallel) else model
     
     all_features = []
     with torch.no_grad():
@@ -209,12 +274,16 @@ def train_incremental_session(
             noisy = noisy.to(device)
             
             # Extract encoder features
-            features = model.get_encoder_features(noisy)  # [B, N, L]
+            features = model_for_features.get_encoder_features(noisy)  # [B, N, L]
             
-            # Apply mean pooling: [B, N, L] -> [B, N]
-            features_pooled = torch.mean(features, dim=2)  # Paper: MeanP(E(x))
-            
-            all_features.append(features_pooled.cpu().numpy())
+            # Length-aware mean pooling: only average over real frames, not padding
+            # Encoder: Conv1d(stride=8, padding=8, kernel=16) -> L_enc = T//8 + 1
+            enc_lengths = lengths // 8 + 1  # [B]
+            B_feat, N_feat, L_feat = features.shape
+            for b in range(B_feat):
+                real_len = min(enc_lengths[b].item(), L_feat)
+                feat = features[b, :, :real_len].mean(dim=1)  # [N]
+                all_features.append(feat.cpu().numpy().reshape(1, -1))
     
     # Concatenate all features
     all_features = np.concatenate(all_features, axis=0)  # [N_samples, N]
@@ -235,15 +304,21 @@ def train_incremental_session(
     correct = 0
     total = 0
     
+    # Get the actual model (unwrap if DataParallel)
+    model_for_features = model.module if isinstance(model, torch.nn.DataParallel) else model
+    
     model.eval()
     with torch.no_grad():
         for noisy, clean, lengths, info in val_loader:
             noisy = noisy.to(device)
-            features = model.get_encoder_features(noisy)
-            features_pooled = torch.mean(features, dim=2).cpu().numpy()
+            features = model_for_features.get_encoder_features(noisy)
+            B_feat, N_feat, L_feat = features.shape
+            enc_lengths = lengths // 8 + 1
             
             for i in range(len(noisy)):
-                predicted = selector.predict(features_pooled[i])
+                real_len = min(enc_lengths[i].item(), L_feat)
+                feat = features[i, :, :real_len].mean(dim=1).cpu().numpy()
+                predicted = selector.predict(feat)
                 # For this session, all samples should be predicted as this session
                 if predicted == session_id:
                     correct += 1
@@ -261,7 +336,8 @@ def train_all_incremental_sessions(
     config: ProjectConfig,
     pretrained_model_path: str,
     data_root: str = "data/final_data",
-    session_ids: list = [1, 2, 3, 4, 5]
+    session_ids: list = [1, 2, 3, 4, 5],
+    resume_if_exists: bool = True
 ):
     """
     Train all incremental sessions sequentially
@@ -277,17 +353,32 @@ def train_all_incremental_sessions(
     
     results = {}
     
+    # Paper Eq. (4-5): Selector is fitted only on incremental sessions (1..t).
+    # Session 0 (pre-train) has mixed noise types and is NOT included in
+    # the selector's domain set.
+    
     for session_id in session_ids:
         print(f"\n\n{'#'*80}")
         print(f"# TRAINING SESSION {session_id}".center(78, ' ') + " #")
         print(f"{'#'*80}\n")
         
+        resume_from = None
+        if resume_if_exists:
+            checkpoint_dir = Path(config.checkpoint_dir) / f"session{session_id}_incremental"
+            checkpoint_paths = list(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
+            if checkpoint_paths:
+                def _epoch_num(path: Path) -> int:
+                    stem = path.stem
+                    return int(stem.split("checkpoint_epoch_")[-1])
+                resume_from = str(max(checkpoint_paths, key=_epoch_num))
+
         history, model_path, selector_path = train_incremental_session(
             config=config,
             session_id=session_id,
             pretrained_model_path=current_model_path,
             data_root=data_root,
-            selector_path=current_selector_path
+            selector_path=current_selector_path,
+            resume_from=resume_from
         )
         
         # Update paths for next session
@@ -321,7 +412,7 @@ def main():
         "--session_id",
         type=int,
         required=True,
-        choices=[1, 2, 3, 4, 5],
+        choices=[1, 2, 3, 4],
         help="Session ID to train"
     )
     parser.add_argument(

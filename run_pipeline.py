@@ -24,6 +24,18 @@ from src.evaluation.evaluate import evaluate_cumulative
 from src.utils.config import get_default_config
 
 
+def _find_latest_checkpoint(checkpoint_dir: Path) -> Path:
+    checkpoint_paths = list(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
+    if not checkpoint_paths:
+        return None
+
+    def _epoch_num(path: Path) -> int:
+        stem = path.stem
+        return int(stem.split("checkpoint_epoch_")[-1])
+
+    return max(checkpoint_paths, key=_epoch_num)
+
+
 def run_pipeline(
     mode: str = "all",
     data_root: str = "data/final_data",
@@ -52,8 +64,8 @@ def run_pipeline(
     
     # Paths
     pretrained_model_path = Path("checkpoints/session0_pretrain/lna_pretrained.pt")
-    final_model_path = Path("checkpoints/session5_incremental/lna_session5.pt")
-    final_selector_path = Path("checkpoints/session5_incremental/selector_upto_session5.pkl")
+    final_model_path = Path("checkpoints/session4_incremental/lna_session4.pt")
+    final_selector_path = Path("checkpoints/session4_incremental/selector_upto_session4.pkl")
     results_path = Path("results/final_results.json")
     
     # Step 1: Pre-training (Session 0)
@@ -62,9 +74,16 @@ def run_pipeline(
         print("# STEP 1: PRE-TRAINING (SESSION 0)".center(78) + " #")
         print("#"*80 + "\n")
         
+        resume_pretrain = _find_latest_checkpoint(
+            Path(config.checkpoint_dir) / "session0_pretrain"
+        )
+        if resume_pretrain:
+            print(f"Resuming pre-training from: {resume_pretrain}")
+
         history, metrics = train_pretrain(
             config=config,
-            data_root=data_root
+            data_root=data_root,
+            resume_from=str(resume_pretrain) if resume_pretrain else None
         )
         
         print(f"\n✓ Pre-training complete!")
@@ -73,7 +92,7 @@ def run_pipeline(
     # Step 2: Incremental Learning (Sessions 1-5)
     if mode in ["all", "incremental"]:
         print("\n" + "#"*80)
-        print("# STEP 2: INCREMENTAL LEARNING (SESSIONS 1-5)".center(78) + " #")
+        print("# STEP 2: INCREMENTAL LEARNING (SESSIONS 1-4)".center(78) + " #")
         print("#"*80 + "\n")
         
         if not pretrained_model_path.exists():
@@ -85,7 +104,8 @@ def run_pipeline(
             config=config,
             pretrained_model_path=str(pretrained_model_path),
             data_root=data_root,
-            session_ids=[1, 2, 3, 4, 5]
+            session_ids=[1, 2, 3, 4],
+            resume_if_exists=True
         )
         
         print(f"\n✓ Incremental training complete!")
@@ -112,7 +132,7 @@ def run_pipeline(
             model_path=str(final_model_path),
             selector_path=str(final_selector_path),
             data_root=data_root,
-            session_ids=[0, 1, 2, 3, 4, 5],
+            session_ids=[1, 2, 3, 4],
             config=config,
             output_path=str(results_path)
         )

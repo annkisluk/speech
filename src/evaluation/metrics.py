@@ -100,12 +100,18 @@ def calculate_sdr(
     if target.dim() == 3:
         target = target.squeeze(1)
     
-    # Compute distortion
-    distortion = estimate - target
+    # Standard SDR (BSS_eval): project estimate onto target direction
+    # s_target = <est, target> / ||target||^2 * target
+    dot_product = torch.sum(estimate * target, dim=-1, keepdim=True)
+    target_energy = torch.sum(target ** 2, dim=-1, keepdim=True) + eps
+    s_target = (dot_product / target_energy) * target
     
-    # Calculate SDR
-    target_power = torch.sum(target ** 2, dim=-1) + eps
-    distortion_power = torch.sum(distortion ** 2, dim=-1) + eps
+    # Distortion is the component orthogonal to target
+    e_distortion = estimate - s_target
+    
+    # SDR = 10 * log10(||s_target||^2 / ||e_distortion||^2)
+    target_power = torch.sum(s_target ** 2, dim=-1) + eps
+    distortion_power = torch.sum(e_distortion ** 2, dim=-1) + eps
     sdr = 10 * torch.log10(target_power / distortion_power)
     
     return sdr
@@ -250,8 +256,17 @@ class MetricsCalculator:
         for i in range(batch_size):
             if lengths is not None:
                 length = lengths[i].item()
-                estimate = estimate_batch[i, :length]
-                target = target_batch[i, :length]
+                # Handle [B, 1, T] (with channel dim) and [B, T] shapes
+                sample_est = estimate_batch[i]  # [1, T] or [T]
+                sample_tgt = target_batch[i]
+                if sample_est.dim() == 2:
+                    # [1, T] -> trim time dim -> squeeze channel
+                    estimate = sample_est[0, :length]
+                    target = sample_tgt[0, :length]
+                else:
+                    # [T] -> trim directly
+                    estimate = sample_est[:length]
+                    target = sample_tgt[:length]
             else:
                 estimate = estimate_batch[i]
                 target = target_batch[i]

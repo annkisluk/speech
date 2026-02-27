@@ -21,9 +21,9 @@ class DataConfig:
     # Audio parameters (Section II, III)
     sample_rate: int = 8000  # 8 kHz as per paper
     # Batch sizes 
-    train_batch_size: int = 2   
-    val_batch_size: int = 4
-    test_batch_size: int = 4
+    train_batch_size: int = 2
+    val_batch_size: int = 2
+    test_batch_size: int = 2
     
     # Data loading
     num_workers: int = 4
@@ -149,8 +149,8 @@ class TrainingConfig:
     factor: float = 0.5
     
     # Training epochs 
-    pretrain_epochs: int = 5   
-    incremental_epochs: int = 2 
+    pretrain_epochs: int = 40 #change to 40   
+    incremental_epochs: int = 20 #change to 20 
     
     # Gradient clipping
     max_grad_norm: float = 5.0
@@ -159,7 +159,7 @@ class TrainingConfig:
     early_stopping_patience: int = 10
     
     # Checkpointing
-    save_every_n_epochs: int = 5
+    save_every_n_epochs: int = 1
     keep_last_n_checkpoints: int = 3
     
     # Validation
@@ -167,7 +167,7 @@ class TrainingConfig:
     
     # Device
     device: str = "cuda"  # Options: "cuda", "cpu", "mps"
-    use_amp: bool = False  # Automatic Mixed Precision
+    use_amp: bool = True  # Automatic Mixed Precision
     
     # Logging
     log_every_n_steps: int = 100
@@ -183,6 +183,7 @@ class IncrementalConfig:
     domain-specific adapters and decoders
     """
     # What to freeze during incremental learning
+    freeze_backbone: bool = True             # Freeze entire backbone (encoder + masking)
     freeze_encoder: bool = True      
     freeze_masking_network: bool = True  
     freeze_previous_adapters: bool = True  

@@ -256,11 +256,15 @@ class TransformerBlockWithAdapters(nn.Module):
     Standard transformer block (MHA + FFN) with FFL-A and MHA-A inserted.
 
     The frozen pre-trained weights are unchanged. Each adapter adds a small
-    domain-specific correction after its respective sub-layer.
+    domain-specific correction in parallel with its respective sub-layer.
 
-    Signal flow:
-        x -> LayerNorm -> MHA -> [+ MHA-A output] -> residual add
-          -> LayerNorm -> FFN -> [+ FFL-A output] -> residual add -> output
+    Signal flow (Paper Equations 1-2):
+        x -> LayerNorm -> h
+             h -> MHA -----------> sum --> residual add -> x'
+             h -> MHA-A(adapter) -/
+        x' -> LayerNorm -> h'
+             h' -> FFN -----------> sum --> residual add -> output
+             h' -> FFL-A(adapter) -/
     """
 
     def __init__(
@@ -336,26 +340,28 @@ class TransformerBlockWithAdapters(nn.Module):
         Returns:
             Output tensor [B, L, D]
         """
-        # MHA sub-layer with adapter correction
+        # MHA sub-layer with parallel adapter (Paper Eq. 1)
+        # Both MHA and adapter receive the same normalized input h_m
         residual = x
-        x = self.norm1(x)
-        x, _ = self.mha(x, x, x)
-        x = self.dropout1(x)
+        h = self.norm1(x)
+        attn_out, _ = self.mha(h, h, h)
+        attn_out = self.dropout1(attn_out)
 
         if self.use_mha_adapter:
-            x = x + self.mha_adapter(x, mha_adapter_idx)  # additive correction
+            attn_out = attn_out + self.mha_adapter(h, mha_adapter_idx)
 
-        x = residual + x  # residual connection
+        x = residual + attn_out
 
-        # FFN sub-layer with adapter correction
+        # FFN sub-layer with parallel adapter (Paper Eq. 2)
+        # f_m = A^t_ffl(h_m) + FFN(h_m)
         residual = x
-        x = self.norm2(x)
-        x = self.ffn(x)
+        h = self.norm2(x)
+        ffn_out = self.ffn(h)
 
         if self.use_ffl_adapter:
-            x = x + self.ffl_adapter(x, ffl_adapter_idx)  # additive correction
+            ffn_out = ffn_out + self.ffl_adapter(h, ffl_adapter_idx)
 
-        x = residual + x  # residual connection
+        x = residual + ffn_out
 
         return x
 

@@ -49,21 +49,42 @@ def train_pretrain(
     
     print(f"Device: {device}")
     print(f"Data root: {data_root}")
+    
+    # Verify CUDA is working
+    if device == 'cuda':
+        n_gpus = torch.cuda.device_count()
+        print(f"CUDA Devices Available: {n_gpus}")
+        for i in range(n_gpus):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB)")
     print()
     
-    # Create model
-    print("Creating SepFormer model...")
-    model = create_sepformer(
+    # Create model - USE LNA MODEL FOR PRE-TRAINING (not plain SepFormer)
+    # This ensures adapter_layers get trained, not just sepformer.masking_network
+    print("Creating LNA model for pre-training...")
+    from ..models.lna_model import LNAModel
+    
+    model = LNAModel(
         n_basis=config.sepformer.N,
         kernel_size=config.sepformer.L,
         num_layers=config.sepformer.num_layers,
         nhead=config.sepformer.nhead,
         dim_feedforward=config.sepformer.d_ffn,
-        dropout=config.sepformer.dropout
+        dropout=config.sepformer.dropout,
+        adapter_bottleneck_dim=config.adapter.bottleneck_dim,
+        max_sessions=6
     )
+    
+    # Set to session 0 mode (no adapters, just train base transformer)
+    model.set_training_mode(session_id=0)
     
     print(f"  Total parameters: {model.get_num_parameters():,}")
     print(f"  Trainable parameters: {model.get_num_parameters(trainable_only=True):,}")
+    
+    # Enable multi-GPU training with DataParallel
+    if device == 'cuda' and torch.cuda.device_count() > 1:
+        print(f"\nUsing DataParallel with {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+        print(f"  Training will be parallelized across GPUs: {list(range(torch.cuda.device_count()))}")
     
     # Create dataloaders
     print("\nLoading Session 0 data...")
@@ -74,6 +95,7 @@ def train_pretrain(
         batch_size_val=config.data.val_batch_size,
         batch_size_test=config.data.test_batch_size,
         num_workers=config.data.num_workers,
+        pin_memory=config.data.pin_memory,
         sample_rate=config.data.sample_rate
     )
     
@@ -116,8 +138,16 @@ def train_pretrain(
         scheduler=scheduler,
         use_amp=config.training.use_amp,
         log_dir=str(log_dir),
-        checkpoint_dir=str(checkpoint_dir)
+        checkpoint_dir=str(checkpoint_dir),
+        max_grad_norm=config.training.max_grad_norm
     )
+    
+    # Verify model is on correct device
+    model_for_check = trainer.model.module if isinstance(trainer.model, torch.nn.DataParallel) else trainer.model
+    print(f"\n✓ Model device: {next(model_for_check.parameters()).device}")
+    print(f"✓ Training will use: {trainer.device}")
+    if isinstance(trainer.model, torch.nn.DataParallel):
+        print(f"✓ Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
     
     # Resume from checkpoint if specified
     if resume_from:
@@ -156,24 +186,11 @@ def train_pretrain(
         print(f"  {metric}: {value:.4f}")
     
     # Save final model in LNA format for incremental learning
-    print("\nSaving pre-trained model for incremental learning...")
+    print("\nSaving pre-trained LNA model for incremental learning...")
     
-    # Convert to LNA model structure (for incremental learning)
-    from ..models.lna_model import LNAModel
-    
-    lna_model = LNAModel(
-        n_basis=config.sepformer.N,
-        kernel_size=config.sepformer.L,
-        num_layers=config.sepformer.num_layers,
-        nhead=config.sepformer.nhead,
-        dim_feedforward=config.sepformer.d_ffn,
-        dropout=config.sepformer.dropout,
-        adapter_bottleneck_dim=config.adapter.bottleneck_dim,
-        max_sessions=6  # 0 + 5 incremental
-    )
-    
-    # Copy pre-trained weights to LNA model's backbone
-    lna_model.sepformer.load_state_dict(model.state_dict())
+    # Model is already LNA format - just save it directly
+    # Handle DataParallel: unwrap model if needed
+    lna_model = model.module if isinstance(model, torch.nn.DataParallel) else model
     lna_model.is_pretrained = True
     
     # Save
