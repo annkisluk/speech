@@ -37,11 +37,10 @@ except ImportError:
 
 class SimplifiedEncoder(nn.Module):
     """
-    Simplified encoder for development/testing when SpeechBrain not available
+    SepFormer Encoder matching SpeechBrain's implementation.
     
-    Real SepFormer encoder:
-    - 1D convolution with stride
-    - Learns to represent audio in latent space
+    Architecture: Conv1d (no bias, no padding) → ReLU
+    Reference: SpeechBrain speechbrain/lobes/models/dual_path.py Encoder class
     """
     
     def __init__(
@@ -55,31 +54,27 @@ class SimplifiedEncoder(nn.Module):
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=kernel_size // 2,
-            padding=kernel_size // 2
+            bias=False
         )
-        self.norm = nn.GroupNorm(1, out_channels)
-        self.activation = nn.ReLU()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: [B, 1, T] audio waveform
         Returns:
-            [B, N, L] encoded representation
+            [B, N, L] encoded representation where L = floor((T - kernel_size) / stride) + 1
         """
         x = self.conv(x)
-        x = self.norm(x)
-        x = self.activation(x)
+        x = torch.relu(x)
         return x
 
 
 class SimplifiedDecoder(nn.Module):
     """
-    Simplified decoder for development/testing
+    SepFormer Decoder matching SpeechBrain's implementation.
     
-    Real SepFormer decoder:
-    - Transposed convolution
-    - Reconstructs waveform from latent space
+    Architecture: ConvTranspose1d (no bias, no padding)
+    Reference: SpeechBrain speechbrain/lobes/models/dual_path.py Decoder class
     """
     
     def __init__(
@@ -93,7 +88,7 @@ class SimplifiedDecoder(nn.Module):
             out_channels=1,
             kernel_size=kernel_size,
             stride=kernel_size // 2,
-            padding=kernel_size // 2
+            bias=False
         )
     
     def forward(self, x: torch.Tensor, target_length: Optional[int] = None) -> torch.Tensor:

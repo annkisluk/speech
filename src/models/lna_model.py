@@ -9,11 +9,11 @@ This module integrates:
 
 Paper Reference: Section III - The Proposed Method
 
-Key Innovation:
-"We introduce a lightweight ISE module, referred to as Learning Noise 
-Adapters (LNAs). When faced with new noise domains, LNAs dynamically 
-train noise adapters tailored to adapt to the specific domain, while 
-maintaining the stability of pre-trained modules."
+Architecture matches SpeechBrain's SepFormer:
+- 2 Dual-Path Transformer (DPT) blocks
+- Each DPT block: IntraTransformer(8 layers) + InterTransformer(8 layers)
+- Total: 32 transformer layers (~25.6M backbone params)
+- Skip connections + Linear + GroupNorm between intra/inter stages
 """
 
 import torch
@@ -26,25 +26,147 @@ from .sepformer import SepFormer
 from .adapters import TransformerBlockWithAdapters, FFLAdapter, MHAAdapter
 
 
+class DualPathBlock(nn.Module):
+    """
+    One Dual-Path Transformer (DPT) Block from SepFormer.
+    
+    Structure (matching SpeechBrain's Dual_Computation_Block):
+        Input [B, N, K, S]
+        → Intra-chunk: 8 transformer layers on [B*S, K, N] → Linear → Reshape + Skip → GroupNorm
+        → Inter-chunk: 8 transformer layers on [B*K, S, N] → Linear → Reshape + Skip → GroupNorm
+        → Output [B, N, K, S]
+    """
+    
+    def __init__(
+        self,
+        d_model: int = 256,
+        nhead: int = 8,
+        dim_feedforward: int = 1024,
+        dropout: float = 0.1,
+        bottleneck_dim: int = 1,
+        max_sessions: int = 10,
+        layers_per_direction: int = 8,
+        use_mha_adapter: bool = True,
+        use_ffl_adapter: bool = True,
+        skip_around_intra: bool = True,
+    ):
+        super().__init__()
+        
+        self.skip_around_intra = skip_around_intra
+        self.layers_per_direction = layers_per_direction
+        
+        # Intra-chunk transformer layers (local attention within each chunk)
+        self.intra_layers = nn.ModuleList([
+            TransformerBlockWithAdapters(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=dim_feedforward, dropout=dropout,
+                bottleneck_dim=bottleneck_dim,
+                use_mha_adapter=use_mha_adapter,
+                use_ffl_adapter=use_ffl_adapter,
+                max_adapters=max_sessions
+            )
+            for _ in range(layers_per_direction)
+        ])
+        self.intra_linear = nn.Linear(d_model, d_model)
+        self.intra_norm = nn.GroupNorm(1, d_model)
+        
+        # Inter-chunk transformer layers (global attention across chunks)
+        self.inter_layers = nn.ModuleList([
+            TransformerBlockWithAdapters(
+                d_model=d_model, nhead=nhead,
+                dim_feedforward=dim_feedforward, dropout=dropout,
+                bottleneck_dim=bottleneck_dim,
+                use_mha_adapter=use_mha_adapter,
+                use_ffl_adapter=use_ffl_adapter,
+                max_adapters=max_sessions
+            )
+            for _ in range(layers_per_direction)
+        ])
+        self.inter_linear = nn.Linear(d_model, d_model)
+        self.inter_norm = nn.GroupNorm(1, d_model)
+    
+    def forward(self, x: torch.Tensor, session_id: int = 0) -> torch.Tensor:
+        """
+        Args:
+            x: [B, N, K, S] dual-path segments
+            session_id: Current session (0=pretrain, >0 uses adapters)
+        Returns:
+            [B, N, K, S]
+        """
+        B, N, K, S = x.shape
+        
+        # --- Intra-chunk processing (local context within each chunk) ---
+        intra = x.permute(0, 3, 2, 1).contiguous().reshape(B * S, K, N)
+        
+        adapter_kwargs = {}
+        if session_id > 0:
+            idx = session_id - 1
+            adapter_kwargs = {'mha_adapter_idx': idx, 'ffl_adapter_idx': idx}
+        
+        for layer in self.intra_layers:
+            intra = layer(intra, **adapter_kwargs)
+        
+        intra = self.intra_linear(intra)  # [B*S, K, N]
+        intra = intra.reshape(B, S, K, N).permute(0, 3, 2, 1).contiguous()  # [B, N, K, S]
+        
+        if self.skip_around_intra:
+            intra = intra + x  # Skip connection around intra
+        intra = self.intra_norm(intra)
+        
+        # --- Inter-chunk processing (global context across chunks) ---
+        inter = intra.permute(0, 2, 3, 1).contiguous().reshape(B * K, S, N)
+        
+        for layer in self.inter_layers:
+            inter = layer(inter, **adapter_kwargs)
+        
+        inter = self.inter_linear(inter)  # [B*K, S, N]
+        inter = inter.reshape(B, K, S, N).permute(0, 3, 1, 2).contiguous()  # [B, N, K, S]
+        inter = inter + intra  # Always skip for inter
+        inter = self.inter_norm(inter)
+        
+        return inter
+    
+    def add_new_session_adapters(self, bottleneck_dim: int = 1):
+        """Add adapter pair to all intra + inter layers for a new session."""
+        indices = []
+        for layer in self.intra_layers:
+            indices.append(layer.add_new_session_adapters(bottleneck_dim))
+        for layer in self.inter_layers:
+            indices.append(layer.add_new_session_adapters(bottleneck_dim))
+        return indices
+    
+    def freeze_session_adapters(self, adapter_idx: int):
+        """Freeze a session's adapters in all layers."""
+        for layer in self.intra_layers:
+            layer.freeze_session_adapters(adapter_idx)
+        for layer in self.inter_layers:
+            layer.freeze_session_adapters(adapter_idx)
+    
+    def set_active_adapters(self, adapter_idx: int):
+        """Set active adapter in all layers."""
+        for layer in self.intra_layers:
+            layer.set_active_adapters(adapter_idx)
+        for layer in self.inter_layers:
+            layer.set_active_adapters(adapter_idx)
+    
+    def get_all_transformer_layers(self) -> List[TransformerBlockWithAdapters]:
+        """Return flat list of all TransformerBlockWithAdapters."""
+        return list(self.intra_layers) + list(self.inter_layers)
+
+
 class LNAModel(nn.Module):
     """
     Complete Learning Noise Adapters Model
     
     Paper Reference: Figure 2 - Framework of LNA
     
-    Architecture:
-        Session 0 (Pre-training):
-            Input → Encoder → Dual-Path Masking Network → Decoder → Output
-        
-        Session t (Incremental, t>0):
-            Input → Encoder(frozen) → Dual-Path Masking Network(frozen) 
-                  → + Adapters^t → Decoder^t → Output
-    
-    Uses Dual-Path processing (SepFormer-style):
-        - Segments encoded features into overlapping chunks
-        - Alternates Intra-chunk (local) and Inter-chunk (global) transformer layers
-        - Each transformer layer has optional adapters (MHA-A and FFL-A)
-        - Generates a mask applied to encoded features
+    Architecture matches SpeechBrain's SepFormer:
+        - Encoder: Conv1d(1, 256, 16, stride=8) → ReLU
+        - Masking Network: GroupNorm → Segment → 2 DPT blocks → Overlap-add → PReLU → Conv1d → ReLU
+        - Each DPT block: 8 intra layers + linear + norm → 8 inter layers + linear + norm
+        - Total: 32 transformer layers (~25.6M backbone params)
+        - Session-specific adapters inserted in parallel in each transformer layer
+        - Session-specific decoders: ConvTranspose1d(256, 1, 16, stride=8)
     """
     
     def __init__(
@@ -59,26 +181,30 @@ class LNAModel(nn.Module):
         max_sessions: int = 10,
         use_mha_adapter: bool = True,
         use_ffl_adapter: bool = True,
-        chunk_size: int = 250
+        chunk_size: int = 250,
+        num_blocks: int = 2
     ):
         """
         Args:
-            n_basis: Number of basis signals in SepFormer
-            kernel_size: Encoder/decoder kernel size
-            num_layers: Number of transformer layers (split between intra/inter)
-            nhead: Number of attention heads
-            dim_feedforward: FFN dimension
+            n_basis: Number of basis signals (N=256 in paper)
+            kernel_size: Encoder/decoder kernel size (L=16 in paper)
+            num_layers: Transformer layers per direction per DPT block (8 in paper)
+            nhead: Number of attention heads (8 in paper)
+            dim_feedforward: FFN dimension (1024 in paper)
             dropout: Dropout rate
-            adapter_bottleneck_dim: Bottleneck dim for adapters (Ĉ in paper)
+            adapter_bottleneck_dim: Bottleneck dim for adapters (Ĉ=1 in paper)
             max_sessions: Maximum number of incremental sessions
             use_mha_adapter: Whether to use MHA adapters
             use_ffl_adapter: Whether to use FFL adapters
-            chunk_size: Chunk size K for dual-path segmentation
+            chunk_size: Chunk size K for dual-path segmentation (250 in paper)
+            num_blocks: Number of DPT blocks (2 in paper, total layers = num_blocks * 2 * num_layers)
         """
         super().__init__()
         
         self.n_basis = n_basis
+        self.kernel_size = kernel_size
         self.num_layers = num_layers
+        self.num_blocks = num_blocks
         self.adapter_bottleneck_dim = adapter_bottleneck_dim
         self.max_sessions = max_sessions
         self.use_mha_adapter = use_mha_adapter
@@ -86,7 +212,6 @@ class LNAModel(nn.Module):
         self.chunk_size = chunk_size
         
         # SepFormer backbone - only use encoder and decoder
-        # Paper: "We adopt Sepformer as the backbone"
         self.sepformer = SepFormer(
             n_basis=n_basis,
             kernel_size=kernel_size,
@@ -97,34 +222,35 @@ class LNAModel(nn.Module):
             use_speechbrain=False
         )
         
-        # Delete unused masking_network (we replace it with dual-path adapter layers)
+        # Delete unused masking_network (we replace it with DPT blocks)
         del self.sepformer.masking_network
         self.sepformer.masking_network = None
         
-        # Input normalization for the masking network
-        # SepFormer: LayerNorm before dual-path processing
+        # Input normalization before dual-path processing
+        # SpeechBrain: GroupNorm(1, N) — equivalent to channel-wise LayerNorm
         self.input_norm = nn.GroupNorm(1, n_basis)
         
-        # Dual-Path Transformer Layers with Adapters
-        # Paper: SepFormer uses intra-chunk and inter-chunk transformer layers
-        # We alternate: even layers = intra-chunk, odd layers = inter-chunk
-        self.adapter_layers = nn.ModuleList()
-        for _ in range(num_layers):
-            adapter_layer = TransformerBlockWithAdapters(
+        # Dual-Path Transformer Blocks
+        # Paper/SpeechBrain: 2 DPT blocks, each with 8 intra + 8 inter layers
+        # Total: 2 × (8 + 8) = 32 transformer layers
+        self.dpt_blocks = nn.ModuleList([
+            DualPathBlock(
                 d_model=n_basis,
                 nhead=nhead,
                 dim_feedforward=dim_feedforward,
                 dropout=dropout,
                 bottleneck_dim=adapter_bottleneck_dim,
+                max_sessions=max_sessions,
+                layers_per_direction=num_layers,
                 use_mha_adapter=use_mha_adapter,
                 use_ffl_adapter=use_ffl_adapter,
-                max_adapters=max_sessions
+                skip_around_intra=True
             )
-            self.adapter_layers.append(adapter_layer)
+            for _ in range(num_blocks)
+        ])
         
-        # SepFormer mask estimation output:
-        # PReLU activation + Linear projection → mask
-        # Paper/SepFormer: After dual-path, project to mask with ReLU
+        # Mask estimation output:
+        # SpeechBrain: PReLU → Conv1d → ReLU
         self.mask_prelu = nn.PReLU()
         self.mask_proj = nn.Conv1d(n_basis, n_basis, 1)
         self.mask_activation = nn.ReLU()
@@ -166,23 +292,21 @@ class LNAModel(nn.Module):
         
         device = next(self.parameters()).device
         
-        # Add adapters to all layers
+        # Add adapters to all layers in all DPT blocks
         adapter_indices = []
-        for layer in self.adapter_layers:
-            indices = layer.add_new_session_adapters(bottleneck_dim)
-            adapter_indices.append(indices)
-            layer.to(device)
+        for block in self.dpt_blocks:
+            indices = block.add_new_session_adapters(bottleneck_dim)
+            adapter_indices.extend(indices)
+            block.to(device)
         
-        # Add new decoder
-        # Paper: "create new decoder φ^t_D for session t"
-        # Must match session 0 decoder architecture (kernel=16, stride=8, padding=8)
+        # Add new decoder (no padding, no bias — matching SepFormer)
         decoder_key = f'session_{session_id}'
         self.decoders[decoder_key] = nn.ConvTranspose1d(
             in_channels=self.n_basis,
             out_channels=1,
-            kernel_size=16,
-            stride=8,
-            padding=8
+            kernel_size=self.kernel_size,
+            stride=self.kernel_size // 2,
+            bias=False
         ).to(device)
         
         # Initialize from pretrained decoder so the new decoder starts
@@ -191,7 +315,8 @@ class LNAModel(nn.Module):
         src = pretrained_dec.conv_transpose if hasattr(pretrained_dec, 'conv_transpose') else pretrained_dec
         with torch.no_grad():
             self.decoders[decoder_key].weight.copy_(src.weight)
-            self.decoders[decoder_key].bias.copy_(src.bias)
+            if src.bias is not None and self.decoders[decoder_key].bias is not None:
+                self.decoders[decoder_key].bias.copy_(src.bias)
         
         self.current_session = session_id
         
@@ -248,13 +373,14 @@ class LNAModel(nn.Module):
             
             # Add new adapters for this session if needed
             adapter_idx = session_id - 1  # Session 1 uses adapter 0, etc.
-            # Check if we need to add adapters (only for the first layer)
-            if self.adapter_layers[0].mha_adapter.num_adapters <= adapter_idx:
+            
+            # Check if we need to add adapters (check first layer of first block)
+            first_layer = self.dpt_blocks[0].intra_layers[0]
+            if first_layer.mha_adapter.num_adapters <= adapter_idx:
                 print(f"Adding new adapters for session {session_id} (adapter_idx={adapter_idx})")
-                for layer in self.adapter_layers:
-                    layer.add_new_session_adapters(bottleneck_dim=self.adapter_bottleneck_dim)
-                    # Move new adapter params to correct device
-                    layer.to(device)
+                for block in self.dpt_blocks:
+                    block.add_new_session_adapters(bottleneck_dim=self.adapter_bottleneck_dim)
+                    block.to(device)
             
             # Add decoder for this session if needed
             decoder_key = f'session_{session_id}'
@@ -262,16 +388,17 @@ class LNAModel(nn.Module):
                 self.decoders[decoder_key] = nn.ConvTranspose1d(
                     in_channels=self.n_basis,
                     out_channels=1,
-                    kernel_size=16,
-                    stride=8,
-                    padding=8
+                    kernel_size=self.kernel_size,
+                    stride=self.kernel_size // 2,
+                    bias=False
                 ).to(device)
                 # Initialize from pretrained decoder
                 pretrained_dec = self.decoders['session_0']
                 src = pretrained_dec.conv_transpose if hasattr(pretrained_dec, 'conv_transpose') else pretrained_dec
                 with torch.no_grad():
                     self.decoders[decoder_key].weight.copy_(src.weight)
-                    self.decoders[decoder_key].bias.copy_(src.bias)
+                    if src.bias is not None and self.decoders[decoder_key].bias is not None:
+                        self.decoders[decoder_key].bias.copy_(src.bias)
             
             # Freeze backbone (encoder + masking network)
             if freeze_backbone:
@@ -286,18 +413,18 @@ class LNAModel(nn.Module):
                     param.requires_grad = False
                 # mask_activation (ReLU) has no parameters
                 
-                # Freeze base transformer layers (MHA, FFN, norms) - part of θ^0
-                for layer in self.adapter_layers:
-                    for name, param in layer.named_parameters():
+                # Freeze DPT block components: transformer layers, linears, norms
+                for block in self.dpt_blocks:
+                    for name, param in block.named_parameters():
                         # Only freeze non-adapter parameters
                         if 'mha_adapter' not in name and 'ffl_adapter' not in name:
                             param.requires_grad = False
             
             # Freeze previous adapters (adapter 0 = session 1, adapter 1 = session 2, ...)
             if freeze_previous_adapters:
-                for layer in self.adapter_layers:
+                for block in self.dpt_blocks:
                     for prev_adapter_idx in range(session_id - 1):
-                        layer.freeze_session_adapters(prev_adapter_idx)
+                        block.freeze_session_adapters(prev_adapter_idx)
             
             # Freeze previous decoders
             if freeze_previous_decoders:
@@ -313,8 +440,8 @@ class LNAModel(nn.Module):
                     param.requires_grad = True
             
             # Set active adapters
-            for layer in self.adapter_layers:
-                layer.set_active_adapters(session_id - 1)  # -1 because adapters are 0-indexed
+            for block in self.dpt_blocks:
+                block.set_active_adapters(session_id - 1)  # -1 because adapters are 0-indexed
             
             print(f"Training mode: Session {session_id} (incremental)")
             print(f"  Trainable parameters: {self.get_num_parameters(trainable_only=True):,}")
@@ -331,8 +458,8 @@ class LNAModel(nn.Module):
         
         # Set active adapters
         if session_id > 0:
-            for layer in self.adapter_layers:
-                layer.set_active_adapters(session_id - 1)
+            for block in self.dpt_blocks:
+                block.set_active_adapters(session_id - 1)
         
         print(f"Inference mode: Session {session_id}")
     
@@ -459,37 +586,11 @@ class LNAModel(nn.Module):
         segments, orig_L = self._segment(x, K)  # [B, N, K, S]
         S = segments.shape[3]
         
-        # 3. Dual-path transformer processing
-        # Alternate between intra-chunk (even layers) and inter-chunk (odd layers)
+        # 3. Dual-path transformer processing via DPT blocks
         x = segments  # [B, N, K, S]
         
-        for i, layer in enumerate(self.adapter_layers):
-            if i % 2 == 0:
-                # --- Intra-chunk (local context within each chunk) ---
-                # Reshape: [B, N, K, S] → [B*S, K, N]
-                x_proc = x.permute(0, 3, 2, 1).contiguous().view(B * S, K, N)
-                
-                if session_id > 0:
-                    idx = session_id - 1
-                    x_proc = layer(x_proc, mha_adapter_idx=idx, ffl_adapter_idx=idx)
-                else:
-                    x_proc = layer(x_proc, mha_adapter_idx=None, ffl_adapter_idx=None)
-                
-                # Reshape back: [B*S, K, N] → [B, N, K, S]
-                x = x_proc.view(B, S, K, N).permute(0, 3, 2, 1).contiguous()
-            else:
-                # --- Inter-chunk (global context across chunks) ---
-                # Reshape: [B, N, K, S] → [B*K, S, N]
-                x_proc = x.permute(0, 2, 3, 1).contiguous().view(B * K, S, N)
-                
-                if session_id > 0:
-                    idx = session_id - 1
-                    x_proc = layer(x_proc, mha_adapter_idx=idx, ffl_adapter_idx=idx)
-                else:
-                    x_proc = layer(x_proc, mha_adapter_idx=None, ffl_adapter_idx=None)
-                
-                # Reshape back: [B*K, S, N] → [B, N, K, S]
-                x = x_proc.view(B, K, S, N).permute(0, 3, 1, 2).contiguous()
+        for block in self.dpt_blocks:
+            x = block(x, session_id)
         
         # 4. Overlap-add to reconstruct: [B, N, K, S] → [B, N, L]
         x = self._overlap_add(x, K, orig_L)
@@ -544,21 +645,25 @@ class LNAModel(nn.Module):
     def get_adapter_info(self) -> Dict:
         """Get information about all adapters"""
         adapter_params = 0
-        for layer in self.adapter_layers:
-            if self.use_mha_adapter:
-                adapter_params += sum(
-                    p.numel() for p in layer.mha_adapter.parameters()
-                )
-            if self.use_ffl_adapter:
-                adapter_params += sum(
-                    p.numel() for p in layer.ffl_adapter.parameters()
-                )
+        total_transformer_layers = 0
+        for block in self.dpt_blocks:
+            for layer in block.get_all_transformer_layers():
+                total_transformer_layers += 1
+                if self.use_mha_adapter:
+                    adapter_params += sum(
+                        p.numel() for p in layer.mha_adapter.parameters()
+                    )
+                if self.use_ffl_adapter:
+                    adapter_params += sum(
+                        p.numel() for p in layer.ffl_adapter.parameters()
+                    )
         
         total_params = self.get_num_parameters()
         
         return {
             'current_session': self.current_session,
-            'num_adapter_layers': len(self.adapter_layers),
+            'num_dpt_blocks': len(self.dpt_blocks),
+            'total_transformer_layers': total_transformer_layers,
             'adapter_parameters': adapter_params,
             'total_parameters': total_params,
             'adapter_percentage': 100 * adapter_params / max(total_params, 1),
@@ -638,11 +743,12 @@ class LNAModel(nn.Module):
 if __name__ == "__main__":
     print("Testing LNA Model...")
     
-    # Create model
-    print("\n1. Creating LNA Model:")
+    # Create model with small config for testing
+    print("\n1. Creating LNA Model (small test config):")
     model = LNAModel(
         n_basis=256,
-        num_layers=2,  # Small for testing
+        num_layers=2,  # Small for testing (real: 8)
+        num_blocks=1,  # Small for testing (real: 2)
         nhead=8,
         adapter_bottleneck_dim=1,
         max_sessions=5

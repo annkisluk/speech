@@ -336,19 +336,22 @@ def get_session_dataloaders(
     train_dataset = SpeechEnhancementDataset(
         data_dir=str(session_dir),
         split="train",
-        sample_rate=sample_rate
+        sample_rate=sample_rate,
+        max_length=4 * sample_rate  # 4 seconds max — prevents OOM with large models
     )
 
     val_dataset = SpeechEnhancementDataset(
         data_dir=str(session_dir),
         split="val",
-        sample_rate=sample_rate    
+        sample_rate=sample_rate,
+        max_length=4 * sample_rate
     )
 
     test_dataset = SpeechEnhancementDataset(
         data_dir=str(session_dir),
         split="test",
-        sample_rate=sample_rate
+        sample_rate=sample_rate,
+        max_length=4 * sample_rate
     )
     
     # Create dataloaders

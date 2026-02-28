@@ -128,7 +128,7 @@ def evaluate_model_on_session(
             if selector:
                 features = model.get_encoder_features(noisy)
                 B_feat, N_feat, L_feat = features.shape
-                enc_lengths = lengths // 8 + 1  # encoder stride=8, padding=8, kernel=16
+                enc_lengths = (lengths - 16) // 8 + 1  # encoder stride=8, kernel=16, no padding
                 
                 for i in range(len(noisy)):
                     real_len = min(enc_lengths[i].item(), L_feat)
@@ -227,6 +227,7 @@ def evaluate_cumulative(
         n_basis=config.sepformer.N,
         kernel_size=config.sepformer.L,
         num_layers=config.sepformer.num_layers,
+        num_blocks=config.sepformer.num_blocks,
         nhead=config.sepformer.nhead,
         dim_feedforward=config.sepformer.d_ffn,
         dropout=config.sepformer.dropout,

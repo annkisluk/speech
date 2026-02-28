@@ -59,7 +59,7 @@ def train_pretrain(
     print()
     
     # Create model - USE LNA MODEL FOR PRE-TRAINING (not plain SepFormer)
-    # This ensures adapter_layers get trained, not just sepformer.masking_network
+    # This ensures DPT blocks get trained, not just sepformer.masking_network
     print("Creating LNA model for pre-training...")
     from ..models.lna_model import LNAModel
     
@@ -67,6 +67,7 @@ def train_pretrain(
         n_basis=config.sepformer.N,
         kernel_size=config.sepformer.L,
         num_layers=config.sepformer.num_layers,
+        num_blocks=config.sepformer.num_blocks,
         nhead=config.sepformer.nhead,
         dim_feedforward=config.sepformer.d_ffn,
         dropout=config.sepformer.dropout,

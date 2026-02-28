@@ -72,6 +72,7 @@ def train_incremental_session(
         n_basis=config.sepformer.N,
         kernel_size=config.sepformer.L,
         num_layers=config.sepformer.num_layers,
+        num_blocks=config.sepformer.num_blocks,
         nhead=config.sepformer.nhead,
         dim_feedforward=config.sepformer.d_ffn,
         dropout=config.sepformer.dropout,
@@ -154,7 +155,10 @@ def train_incremental_session(
     print(f"    ✓ Backbone frozen: {backbone_frozen}")
     
     # Count trainable params by type
-    adapter_trainable = sum(p.numel() for p in model_for_check.adapter_layers.parameters() if p.requires_grad)
+    adapter_trainable = sum(
+        p.numel() for block in model_for_check.dpt_blocks
+        for p in block.parameters() if p.requires_grad
+    )
     decoder_trainable = sum(p.numel() for p in model_for_check.decoders[f'session_{session_id}'].parameters() if p.requires_grad)
     print(f"    ✓ Trainable adapter params: {adapter_trainable:,}")
     print(f"    ✓ Trainable decoder params: {decoder_trainable:,}")
@@ -277,8 +281,8 @@ def train_incremental_session(
             features = model_for_features.get_encoder_features(noisy)  # [B, N, L]
             
             # Length-aware mean pooling: only average over real frames, not padding
-            # Encoder: Conv1d(stride=8, padding=8, kernel=16) -> L_enc = T//8 + 1
-            enc_lengths = lengths // 8 + 1  # [B]
+            # Encoder: Conv1d(stride=8, kernel=16, no padding) -> L_enc = (T-16)//8 + 1
+            enc_lengths = (lengths - 16) // 8 + 1  # [B]
             B_feat, N_feat, L_feat = features.shape
             for b in range(B_feat):
                 real_len = min(enc_lengths[b].item(), L_feat)
@@ -313,7 +317,7 @@ def train_incremental_session(
             noisy = noisy.to(device)
             features = model_for_features.get_encoder_features(noisy)
             B_feat, N_feat, L_feat = features.shape
-            enc_lengths = lengths // 8 + 1
+            enc_lengths = (lengths - 16) // 8 + 1
             
             for i in range(len(noisy)):
                 real_len = min(enc_lengths[i].item(), L_feat)

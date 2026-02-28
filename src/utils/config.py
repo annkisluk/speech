@@ -52,7 +52,8 @@ class SepFormerConfig:
     R: int = 4                # Number of repeats
     
     # Transformer parameters
-    num_layers: int = 8       # Paper: N=8 transformer layers
+    num_layers: int = 8       # Transformer layers per direction per DPT block
+    num_blocks: int = 2       # Number of DPT blocks (total layers = num_blocks * 2 * num_layers = 32)
     nhead: int = 8            # Paper: 8 attention heads
     d_ffn: int = 1024        # Feed-forward dimension
     dropout: float = 0.1
