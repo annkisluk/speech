@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 
 from ..models.lna_model import LNAModel
-from ..data.dataset import get_session_dataloaders
+from ..data.dataset import get_session_dataloaders, MultiSessionDataset, create_dataloader
 from ..training.trainer import Trainer, setup_optimizer, setup_scheduler
 from ..selectors.noise_selector import create_selector
 from ..utils.config import ProjectConfig, get_default_config
@@ -98,7 +98,7 @@ def train_incremental_session(
     
     # Create dataloaders
     print(f"\nLoading Session {session_id} data.")
-    train_loader, val_loader, test_loader = get_session_dataloaders(
+    train_loader, _, _ = get_session_dataloaders(
         data_root=data_root,
         session_id=session_id,
         batch_size_train=config.data.train_batch_size,
@@ -108,10 +108,44 @@ def train_incremental_session(
         pin_memory=config.data.pin_memory,
         sample_rate=config.data.sample_rate
     )
-    
+
+    # Cumulative val/test loaders: all sessions 0..session_id (paper: Z^{1,...,t})
+    cumulative_session_ids = list(range(0, session_id + 1))
+    print(f"\nBuilding cumulative val/test sets for sessions {cumulative_session_ids}...")
+
+    cum_val_dataset = MultiSessionDataset(
+        data_root=data_root,
+        session_ids=cumulative_session_ids,
+        split="val",
+        sample_rate=config.data.sample_rate,
+        max_length=4 * config.data.sample_rate  # Cap at 4s — same as single-session val
+    )
+    val_loader = create_dataloader(
+        cum_val_dataset,
+        batch_size=config.data.val_batch_size,
+        shuffle=False,
+        num_workers=config.data.num_workers,
+        pin_memory=config.data.pin_memory
+    )
+
+    cum_test_dataset = MultiSessionDataset(
+        data_root=data_root,
+        session_ids=cumulative_session_ids,
+        split="test",
+        sample_rate=config.data.sample_rate,
+        max_length=4 * config.data.sample_rate  # Cap at 4s — same as single-session test
+    )
+    test_loader = create_dataloader(
+        cum_test_dataset,
+        batch_size=config.data.test_batch_size,
+        shuffle=False,
+        num_workers=config.data.num_workers,
+        pin_memory=config.data.pin_memory
+    )
+
     print(f"  Train batches: {len(train_loader)}")
-    print(f"  Val batches: {len(val_loader)}")
-    print(f"  Test batches: {len(test_loader)}")
+    print(f"  Cumulative val batches: {len(val_loader)} ({len(cum_val_dataset)} samples)")
+    print(f"  Cumulative test batches: {len(test_loader)} ({len(cum_test_dataset)} samples)")
     
     # Setup optimizer 
     optimizer = setup_optimizer(

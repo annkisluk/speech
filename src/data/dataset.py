@@ -102,7 +102,8 @@ class MultiSessionDataset(Dataset):
         session_ids: List[int],
         split: str = "test",
         sample_rate: int = 8000,
-        normalize: bool = True
+        normalize: bool = True,
+        max_length: Optional[int] = None
     ):
 
         self.data_root = Path(data_root)
@@ -110,7 +111,8 @@ class MultiSessionDataset(Dataset):
         self.split = split
         self.sample_rate = sample_rate
         self.normalize = normalize
-        
+        self.max_length = max_length
+
         # Load all sessions
         self.datasets = []
         # Track which session each sample belongs to
@@ -131,7 +133,9 @@ class MultiSessionDataset(Dataset):
                 data_dir=str(session_dir),
                 split=split,
                 sample_rate=sample_rate,
-                normalize=normalize
+                normalize=normalize,
+                max_length=max_length,
+                random_crop=False  # Deterministic for val/test
             )
             
             self.datasets.append(dataset)

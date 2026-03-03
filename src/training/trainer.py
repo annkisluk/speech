@@ -201,9 +201,28 @@ class Trainer:
             noisy = noisy.to('cuda:0', non_blocking=True)
             clean = clean.to('cuda:0', non_blocking=True)
             
+            # Check if batch contains samples from multiple sessions (cumulative val)
+            batch_session_ids = [item.get('session_id', None) for item in info]
+            has_session_ids = any(s is not None for s in batch_session_ids)
+
             # Forward pass
             if noisy.shape[-1] > chunk_size:
                 enhanced = self._forward_with_chunking(noisy, chunk_size, chunk_overlap, model=val_model)
+            elif has_session_ids:
+                # Route each sample to its correct session's adapter + decoder
+                enhanced = torch.zeros_like(noisy)
+                unique_sessions = set(s for s in batch_session_ids if s is not None)
+                for sess_id in unique_sessions:
+                    indices = [i for i, s in enumerate(batch_session_ids) if s == sess_id]
+                    idx_tensor = torch.tensor(indices, device=noisy.device)
+                    noisy_sess = noisy[idx_tensor]
+                    if self.use_amp:
+                        with torch.amp.autocast("cuda"):
+                            out = val_model(noisy_sess, session_id=sess_id)
+                    else:
+                        out = val_model(noisy_sess, session_id=sess_id)
+                    for k, orig_idx in enumerate(indices):
+                        enhanced[orig_idx] = out[k]
             else:
                 if self.use_amp:
                     with torch.amp.autocast("cuda"):
