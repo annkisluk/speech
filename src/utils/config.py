@@ -158,7 +158,7 @@ class TrainingConfig:
     
     # Early stopping
     early_stopping_patience: int = 100  # Effectively disabled 
-    
+
     # Checkpointing
     save_every_n_epochs: int = 1
     keep_last_n_checkpoints: int = 3
@@ -178,11 +178,6 @@ class TrainingConfig:
 
 @dataclass
 class IncrementalConfig:
-    """
-    Incremental Learning specific configuration
-    Key principle: Freeze pre-trained model and train separate 
-    domain-specific adapters and decoders
-    """
     # What to freeze during incremental learning
     freeze_backbone: bool = True             # Freeze entire backbone (encoder + masking)
     freeze_encoder: bool = True      
@@ -201,12 +196,6 @@ class IncrementalConfig:
 
 @dataclass
 class EvaluationConfig:
-    """
-    Evaluation metrics configuration
-    - SI-SNR (Scale-Invariant SNR)
-    - SDR (Signal-to-Distortion Ratio) 
-    - PESQ (Perceptual Evaluation of Speech Quality)"
-    """
     metrics: List[str] = field(default_factory=lambda: ["si_snr", "sdr", "pesq"])
     
     # PESQ parameters
@@ -218,9 +207,6 @@ class EvaluationConfig:
 
 @dataclass
 class ProjectConfig:
-    """
-    Master configuration combining all components
-    """
     # Sub-configurations
     data: DataConfig = field(default_factory=DataConfig)
     sepformer: SepFormerConfig = field(default_factory=SepFormerConfig)
@@ -261,64 +247,29 @@ class ProjectConfig:
 
 
 def get_default_config() -> ProjectConfig:
-    """
-    Returns default configuration following paper specifications
-    """
     return ProjectConfig()
 
 
 def get_experiment_config(experiment_name: str) -> ProjectConfig:
-    """
-    Get configuration for specific experiments
-    
-    Args:
-        experiment_name: One of ["baseline", "larger_adapter", "meanshift_selector"]
-    
-    Returns:
-        Configured ProjectConfig object
-    """
+
     config = get_default_config()
     config.experiment_name = experiment_name
     
     if experiment_name == "baseline":
-        # Paper's exact configuration
+        # Paper's configuration
         config.adapter.bottleneck_dim = 1
         config.selector.selector_type = "kmeans"
         config.selector.n_clusters = 20
         
     elif experiment_name == "larger_adapter":
-        # Experiment: Larger adapter capacity
         config.adapter.bottleneck_dim = 16
         
     elif experiment_name == "meanshift_selector":
-        # Improvement: Mean-Shift instead of K-Means
         config.selector.selector_type = "meanshift"
         config.selector.bandwidth = None  # Auto-estimate
         
     elif experiment_name == "gmm_selector":
-        # Improvement: GMM clustering
         config.selector.selector_type = "gmm"
         config.selector.n_components = 20
     
     return config
-
-
-if __name__ == "__main__":
-    # Demo: Create and save configurations
-    
-    # Baseline config (paper's method)
-    baseline_config = get_experiment_config("baseline")
-    baseline_config.to_yaml("configs/baseline.yaml")
-    print("Created configs/baseline.yaml")
-    
-    # Experimental configs
-    larger_adapter_config = get_experiment_config("larger_adapter")
-    larger_adapter_config.to_yaml("configs/larger_adapter.yaml")
-    print("Created configs/larger_adapter.yaml")
-    
-    meanshift_config = get_experiment_config("meanshift_selector")
-    meanshift_config.to_yaml("configs/meanshift_selector.yaml")
-    print("Created configs/meanshift_selector.yaml")
-    
-    print("\nConfiguration system ready!")
-    print("Modify configs in config.py or load from YAML files")

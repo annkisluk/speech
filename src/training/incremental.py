@@ -1,11 +1,3 @@
-"""
-Incremental Training Script for Sessions 1-5
-
-Trains adapters and decoders for new noise domains while keeping
-the backbone frozen.
-
-Paper Reference: Section III - Incremental Learning
-"""
 
 import torch
 from pathlib import Path
@@ -28,25 +20,10 @@ def train_incremental_session(
     selector_path: str = None,
     resume_from: str = None
 ):
-    """
-    Train incremental session
-    
-    Paper: "When faced with new noise domains, LNAs dynamically train 
-    noise adapters tailored to adapt to the specific domain"
-    
-    Args:
-        config: Project configuration
-        session_id: Session ID (1, 2, 3, 4, 5)
-        pretrained_model_path: Path to pre-trained LNA model
-        data_root: Root directory with session data
-        selector_path: Path to existing selector (if continuing from previous session)
-    """
     if session_id == 0:
         raise ValueError("Use pretrain.py for session 0")
     
-    print("\n" + "="*80)
-    print(f"SESSION {session_id}: INCREMENTAL TRAINING".center(80))
-    print("="*80 + "\n")
+    print(f"SESSION {session_id}: INCREMENTAL TRAINING")
     
     # Device
     device = config.training.device
@@ -67,7 +44,7 @@ def train_incremental_session(
     print()
     
     # Load pre-trained model
-    print("Loading pre-trained LNA model...")
+    print("Loading pre-trained LNA model")
     model = LNAModel(
         n_basis=config.sepformer.N,
         kernel_size=config.sepformer.L,
@@ -91,17 +68,17 @@ def train_incremental_session(
             )
     
     checkpoint = model.load_checkpoint(pretrained_model_path)
-    print(f"  Loaded from: {pretrained_model_path}")
+    print(f"Loaded from: {pretrained_model_path}")
     
     # Add new session adapters and decoder
-    print(f"\nAdding adapters and decoder for session {session_id}...")
+    print(f"\nAdding adapters and decoder for session {session_id}")
     model.add_new_session(
         session_id=session_id,
         bottleneck_dim=config.adapter.bottleneck_dim
     )
     
     # Set training mode (freeze backbone, train new adapters/decoder)
-    print("\nConfiguring training mode...")
+    print("\nConfiguring training mode")
     model.set_training_mode(
         session_id=session_id,
         freeze_backbone=config.incremental.freeze_backbone,
@@ -120,7 +97,7 @@ def train_incremental_session(
         print(f"  Training will be parallelized across GPUs: {list(range(torch.cuda.device_count()))}")
     
     # Create dataloaders
-    print(f"\nLoading Session {session_id} data...")
+    print(f"\nLoading Session {session_id} data.")
     train_loader, val_loader, test_loader = get_session_dataloaders(
         data_root=data_root,
         session_id=session_id,
@@ -136,8 +113,7 @@ def train_incremental_session(
     print(f"  Val batches: {len(val_loader)}")
     print(f"  Test batches: {len(test_loader)}")
     
-    # Setup optimizer (only for trainable parameters)
-    print("\nSetting up optimizer...")
+    # Setup optimizer 
     optimizer = setup_optimizer(
         model,
         learning_rate=config.training.learning_rate,
@@ -145,14 +121,14 @@ def train_incremental_session(
         optimizer_type=config.training.optimizer
     )
     
-    # Get trainable parameter count (unwrap DataParallel if needed)
+    # Get trainable parameter count 
     model_for_check = model.module if isinstance(model, torch.nn.DataParallel) else model
     print(f"  Trainable parameters: {model_for_check.get_num_parameters(trainable_only=True):,}")
     
-    # CRITICAL: Verify backbone is actually frozen
+    #Verify backbone is actually frozen
     print("\n  Verifying freezing configuration:")
     backbone_frozen = not any(p.requires_grad for p in model_for_check.sepformer.parameters())
-    print(f"    ✓ Backbone frozen: {backbone_frozen}")
+    print(f"  Backbone frozen: {backbone_frozen}")
     
     # Count trainable params by type
     adapter_trainable = sum(
@@ -160,8 +136,8 @@ def train_incremental_session(
         for p in block.parameters() if p.requires_grad
     )
     decoder_trainable = sum(p.numel() for p in model_for_check.decoders[f'session_{session_id}'].parameters() if p.requires_grad)
-    print(f"    ✓ Trainable adapter params: {adapter_trainable:,}")
-    print(f"    ✓ Trainable decoder params: {decoder_trainable:,}")
+    print(f" Trainable adapter params: {adapter_trainable:,}")
+    print(f" Trainable decoder params: {decoder_trainable:,}")
     
     # Setup scheduler
     scheduler = None
@@ -190,10 +166,10 @@ def train_incremental_session(
     
     # Verify model is on correct device
     model_for_check = trainer.model.module if isinstance(trainer.model, torch.nn.DataParallel) else trainer.model
-    print(f"\n✓ Model device: {next(model_for_check.parameters()).device}")
-    print(f"✓ Training will use: {trainer.device}")
+    print(f"\nModel device: {next(model_for_check.parameters()).device}")
+    print(f"Training will use: {trainer.device}")
     if isinstance(trainer.model, torch.nn.DataParallel):
-        print(f"✓ Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
+        print(f"Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
     
     # Resume from checkpoint if specified
     if resume_from:
@@ -201,9 +177,7 @@ def train_incremental_session(
         trainer.load_checkpoint(Path(resume_from))
 
     # Train
-    print("\n" + "="*80)
-    print("STARTING INCREMENTAL TRAINING".center(80))
-    print("="*80 + "\n")
+    print("STARTING INCREMENTAL TRAINING")
     
     print(f"Training for {config.training.incremental_epochs} epochs")
     print(f"Frozen: Backbone (encoder + masking network)")
@@ -222,22 +196,15 @@ def train_incremental_session(
     
     # Save model
     model_checkpoint_path = checkpoint_dir / f"lna_session{session_id}.pt"
-    # Handle DataParallel: unwrap model if needed
+    # Handle DataParallel
     model_to_save = model.module if isinstance(model, torch.nn.DataParallel) else model
     model_to_save.save_checkpoint(
         str(model_checkpoint_path),
         session_id=session_id
     )
     
-    # ========================================================================
     # Train Noise Selector
-    # ========================================================================
-    print("\n" + "="*80)
-    print("TRAINING NOISE SELECTOR".center(80))
-    print("="*80 + "\n")
-    
-    print("Paper Section III.D: Unsupervised Noise Selector")
-    print("Uses K-Means clustering on encoder features\n")
+    print("TRAINING NOISE SELECTOR")
     
     # Load or create selector
     if selector_path and Path(selector_path).exists():
@@ -269,7 +236,7 @@ def train_incremental_session(
     print(f"\nExtracting features for session {session_id}...")
     model.eval()
     
-    # Get the actual model (unwrap if DataParallel)
+    # Get the actual model 
     model_for_features = model.module if isinstance(model, torch.nn.DataParallel) else model
     
     all_features = []
@@ -308,7 +275,7 @@ def train_incremental_session(
     correct = 0
     total = 0
     
-    # Get the actual model (unwrap if DataParallel)
+    # Get the actual model
     model_for_features = model.module if isinstance(model, torch.nn.DataParallel) else model
     
     model.eval()
@@ -331,7 +298,7 @@ def train_incremental_session(
     accuracy = 100 * correct / total
     print(f"  Selector accuracy: {accuracy:.2f}% ({correct}/{total})")
     
-    print(f"\n✓ Session {session_id} training complete!")
+    print(f"\n Session {session_id} training complete")
     
     return history, model_checkpoint_path, selector_save_path
 
@@ -343,28 +310,14 @@ def train_all_incremental_sessions(
     session_ids: list = [1, 2, 3, 4, 5],
     resume_if_exists: bool = True
 ):
-    """
-    Train all incremental sessions sequentially
-    
-    Args:
-        config: Project configuration
-        pretrained_model_path: Path to pre-trained model
-        data_root: Data root directory
-        session_ids: List of session IDs to train
-    """
     current_model_path = pretrained_model_path
     current_selector_path = None
     
     results = {}
     
-    # Paper Eq. (4-5): Selector is fitted only on incremental sessions (1..t).
-    # Session 0 (pre-train) has mixed noise types and is NOT included in
-    # the selector's domain set.
-    
+    # Selector is fitted only on incremental sessions (1..t).    
     for session_id in session_ids:
-        print(f"\n\n{'#'*80}")
         print(f"# TRAINING SESSION {session_id}".center(78, ' ') + " #")
-        print(f"{'#'*80}\n")
         
         resume_from = None
         if resume_if_exists:
@@ -395,9 +348,7 @@ def train_all_incremental_sessions(
             'history': history
         }
     
-    print("\n\n" + "="*80)
-    print("ALL INCREMENTAL SESSIONS COMPLETE!".center(80))
-    print("="*80 + "\n")
+    print("ALL INCREMENTAL SESSIONS COMPLETE")
     
     print("Trained sessions:")
     for session_id in session_ids:
@@ -410,7 +361,7 @@ def train_all_incremental_sessions(
 
 
 def main():
-    """Main function for CLI"""
+    #Main function for CLI
     parser = argparse.ArgumentParser(description="Incremental Training (Sessions 1-5)")
     parser.add_argument(
         "--session_id",
@@ -484,7 +435,7 @@ def main():
             selector_path=args.selector
         )
     
-    print("\n✓ Incremental training complete!")
+    print("\n Incremental training complete")
 
 
 if __name__ == "__main__":

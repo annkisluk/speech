@@ -84,4 +84,4 @@ curl -L -O https://www.openslr.org/resources/12/train-clean-100.tar.gz
 tar -xzvf train-clean-100.tar.gz
 rm train-clean-100.tar.gz
 
-echo "Done! Your data folder is ready."
+echo "Done. data folder is ready."

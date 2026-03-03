@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-Complete Pipeline Script
-
-Runs the entire LNA training and evaluation pipeline.
-
-Usage:
-    python run_pipeline.py --mode all
-    python run_pipeline.py --mode pretrain
-    python run_pipeline.py --mode incremental
-    python run_pipeline.py --mode evaluate
-"""
-
 import argparse
 import sys
 from pathlib import Path
@@ -41,21 +29,11 @@ def run_pipeline(
     data_root: str = "data/final_data",
     device: str = "cuda"
 ):
-    """
-    Run the complete pipeline
-    
-    Args:
-        mode: One of ['all', 'pretrain', 'incremental', 'evaluate']
-        data_root: Data root directory
-        device: Device to use
-    """
     # Load configuration
     config = get_default_config()
     config.training.device = device
     
-    print("\n" + "="*80)
-    print("LNA TRAINING PIPELINE".center(80))
-    print("="*80 + "\n")
+    print("LNA TRAINING PIPELINE")
     
     print(f"Mode: {mode}")
     print(f"Data root: {data_root}")
@@ -70,9 +48,7 @@ def run_pipeline(
     
     # Step 1: Pre-training (Session 0)
     if mode in ["all", "pretrain"]:
-        print("\n" + "#"*80)
         print("# STEP 1: PRE-TRAINING (SESSION 0)".center(78) + " #")
-        print("#"*80 + "\n")
         
         resume_pretrain = _find_latest_checkpoint(
             Path(config.checkpoint_dir) / "session0_pretrain"
@@ -86,18 +62,16 @@ def run_pipeline(
             resume_from=str(resume_pretrain) if resume_pretrain else None
         )
         
-        print(f"\n✓ Pre-training complete!")
-        print(f"  Model saved: {pretrained_model_path}")
+        print(f"\n Pre-training complete!")
+        print(f" Model saved: {pretrained_model_path}")
     
     # Step 2: Incremental Learning (Sessions 1-5)
     if mode in ["all", "incremental"]:
-        print("\n" + "#"*80)
         print("# STEP 2: INCREMENTAL LEARNING (SESSIONS 1-4)".center(78) + " #")
-        print("#"*80 + "\n")
         
         if not pretrained_model_path.exists():
             print(f"Error: Pre-trained model not found: {pretrained_model_path}")
-            print("Please run pre-training first!")
+            print("run pretraining first")
             return
         
         results = train_all_incremental_sessions(
@@ -108,24 +82,22 @@ def run_pipeline(
             resume_if_exists=True
         )
         
-        print(f"\n✓ Incremental training complete!")
+        print(f"\n Incremental training complete")
         print(f"  Final model: {final_model_path}")
         print(f"  Final selector: {final_selector_path}")
     
     # Step 3: Evaluation
     if mode in ["all", "evaluate"]:
-        print("\n" + "#"*80)
         print("# STEP 3: EVALUATION".center(78) + " #")
-        print("#"*80 + "\n")
         
         if not final_model_path.exists():
             print(f"Error: Trained model not found: {final_model_path}")
-            print("Please run incremental training first!")
+            print("run incremental training first")
             return
         
         if not final_selector_path.exists():
             print(f"Error: Selector not found: {final_selector_path}")
-            print("Please run incremental training first!")
+            print("run incremental training first")
             return
         
         results = evaluate_cumulative(
@@ -137,12 +109,10 @@ def run_pipeline(
             output_path=str(results_path)
         )
         
-        print(f"\n✓ Evaluation complete!")
-        print(f"  Results saved: {results_path}")
+        print(f"\n Evaluation complete!")
+        print(f" Results saved: {results_path}")
     
-    print("\n" + "="*80)
-    print("PIPELINE COMPLETE!".center(80))
-    print("="*80 + "\n")
+    print("PIPELINE COMPLETE!")
 
 
 def main():

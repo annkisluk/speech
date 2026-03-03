@@ -1,11 +1,3 @@
-"""
-PyTorch Dataset Classes for Speech Enhancement
-
-Handles loading of noisy-clean speech pairs for training and evaluation.
-
-Paper Reference: Section IV.A - Data organization with train/val/test splits
-"""
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
@@ -17,25 +9,6 @@ from ..utils.audio import load_audio, pad_audio_batch
 
 
 class SpeechEnhancementDataset(Dataset):
-    """
-    Dataset for speech enhancement training
-    
-    Paper structure:
-    - Each split (train/val/test) has:
-      - clean/ folder with clean speech
-      - noisy/ folder with noisy speech
-      - metadata.json with pairing information
-    
-    Usage:
-        dataset = SpeechEnhancementDataset(
-            data_dir="data/final_data/session0_pretrain",
-            split="train",
-            sample_rate=8000
-        )
-        
-        noisy, clean, info = dataset[0]
-    """
-    
     def __init__(
         self,
         data_dir: str,
@@ -45,16 +18,6 @@ class SpeechEnhancementDataset(Dataset):
         normalize: bool = True,
         random_crop: bool = False
     ):
-        """
-        Args:
-            data_dir: Path to session directory (e.g., "data/final_data/session0_pretrain")
-            split: One of ["train", "val", "test"]
-            sample_rate: Target sample rate 
-            max_length: Maximum audio length in samples (None = no limit)
-            normalize: Whether to normalize audio to [-1, 1]
-            random_crop: If True, take a random segment instead of the first max_length samples.
-                         Critical for training — ensures different segments each epoch.
-        """
         self.data_dir = Path(data_dir)
         self.split = split
         self.sample_rate = sample_rate
@@ -82,14 +45,6 @@ class SpeechEnhancementDataset(Dataset):
         return len(self.metadata)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
-        """
-        Get a noisy-clean speech pair
-        
-        Returns:
-            noisy: Noisy speech tensor [1, T]
-            clean: Clean speech tensor [1, T]
-            info: Dictionary with metadata
-        """
         # Get metadata for this sample
         item = self.metadata[idx]
         
@@ -130,29 +85,17 @@ class SpeechEnhancementDataset(Dataset):
         return noisy, clean, info
     
     def get_noise_types(self) -> List[str]:
-        """Get list of unique noise types in this dataset"""
+        #Get list of unique noise types in this dataset
         noise_types = set(item['noise_type'] for item in self.metadata)
         return sorted(list(noise_types))
     
     def get_speaker_ids(self) -> List[str]:
-        """Get list of unique speaker IDs in this dataset"""
+        #Get list of unique speaker IDs in this dataset
         speaker_ids = set(item['speaker_id'] for item in self.metadata)
         return sorted(list(speaker_ids))
 
 
 class MultiSessionDataset(Dataset):
-    """
-    Dataset that combines multiple sessions for evaluation
-    
-    Usage:
-        # Evaluate on cumulative test sets after Session 2
-        dataset = MultiSessionDataset(
-            data_root="data/final_data",
-            session_ids=[1, 2],  # Sessions 1 and 2
-            split="test"
-        )
-    """
-    
     def __init__(
         self,
         data_root: str,
@@ -161,14 +104,7 @@ class MultiSessionDataset(Dataset):
         sample_rate: int = 8000,
         normalize: bool = True
     ):
-        """
-        Args:
-            data_root: Root directory containing all sessions
-            session_ids: List of session IDs to include 
-            split: One of ["train", "val", "test"]
-            sample_rate: Target sample rate
-            normalize: Whether to normalize audio
-        """
+
         self.data_root = Path(data_root)
         self.session_ids = session_ids
         self.split = split
@@ -177,7 +113,8 @@ class MultiSessionDataset(Dataset):
         
         # Load all sessions
         self.datasets = []
-        self.session_labels = []  # Track which session each sample belongs to
+        # Track which session each sample belongs to
+        self.session_labels = []  
         
         for session_id in session_ids:
             if session_id == 0:
@@ -207,12 +144,6 @@ class MultiSessionDataset(Dataset):
         return sum(len(ds) for ds in self.datasets)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
-        """
-        Get a sample from the combined dataset
-        
-        Returns:
-            noisy, clean, info (info includes 'session_id')
-        """
         # Find which dataset this index belongs to
         cumulative = 0
         for dataset_idx, dataset in enumerate(self.datasets):
@@ -232,20 +163,7 @@ class MultiSessionDataset(Dataset):
 
 
 def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, Dict]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, List[Dict]]:
-    """
-    Custom collate function for DataLoader
-    
-    Handles variable-length audio by padding to the longest in the batch
-    
-    Args:
-        batch: List of (noisy, clean, info) tuples
-    
-    Returns:
-        noisy_batch: Padded noisy audio [B, 1, T_max]
-        clean_batch: Padded clean audio [B, 1, T_max]
-        lengths: Original lengths before padding [B]
-        info_list: List of info dicts
-    """
+
     noisy_list = []
     clean_list = []
     lengths = []
@@ -279,19 +197,6 @@ def create_dataloader(
     pin_memory: bool = False,
     prefetch_factor: int = 2
 ) -> DataLoader:
-    """
-    Create DataLoader with appropriate settings
-    
-    Args:
-        dataset: PyTorch Dataset
-        batch_size: Batch size
-        shuffle: Whether to shuffle
-        num_workers: Number of worker processes
-        pin_memory: Pin memory for faster GPU transfer
-    
-    Returns:
-        DataLoader instance
-    """
     use_persistent_workers = num_workers > 0
     return DataLoader(
         dataset,
@@ -318,21 +223,7 @@ def get_session_dataloaders(
     pin_memory: bool = False,
     sample_rate: int = 8000
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """
-    Create train/val/test dataloaders for a single session
-    
-    Args:
-        data_root: Root data directory
-        session_id: Session ID (0 for pretrain, 1-5 for incremental)
-        batch_size_train: Training batch size 
-        batch_size_val: Validation batch size
-        batch_size_test: Test batch size
-        num_workers: Number of data loading workers
-        sample_rate: Audio sample rate 
-    
-    Returns:
-        train_loader, val_loader, test_loader
-    """
+
     # Determine session directory
     data_root = Path(data_root)
     if session_id == 0:
@@ -348,8 +239,8 @@ def get_session_dataloaders(
         data_dir=str(session_dir),
         split="train",
         sample_rate=sample_rate,
-        max_length=4 * sample_rate,  # 4 seconds max — prevents OOM with large models
-        random_crop=True  # Random segment each epoch — critical for data diversity
+        max_length=4 * sample_rate,  # 4 seconds max (prevents OOM)
+        random_crop=True  # Random segment each epoch
     )
 
     val_dataset = SpeechEnhancementDataset(
@@ -357,7 +248,7 @@ def get_session_dataloaders(
         split="val",
         sample_rate=sample_rate,
         max_length=4 * sample_rate,
-        random_crop=False  # Deterministic for reproducible validation
+        random_crop=False  # Deterministic for reproduciblity
     )
 
     test_dataset = SpeechEnhancementDataset(
@@ -365,7 +256,7 @@ def get_session_dataloaders(
         split="test",
         sample_rate=sample_rate,
         max_length=4 * sample_rate,
-        random_crop=False  # Deterministic for reproducible test metrics
+        random_crop=False  # Deterministic for reproduciblity
     )
     
     # Create dataloaders
@@ -395,57 +286,3 @@ def get_session_dataloaders(
     
     return train_loader, val_loader, test_loader
 
-
-
-# Demo and Testing
-
-if __name__ == "__main__":
-    print("Testing dataset classes...")
-    
-    # Test single session dataset
-    print("\n1. Testing single session dataset:")
-    try:
-        dataset = SpeechEnhancementDataset(
-            data_dir="data/final_data/session0_pretrain",
-            split="train",
-            sample_rate=8000
-        )
-        
-        print(f"   Dataset size: {len(dataset)}")
-        print(f"   Noise types: {dataset.get_noise_types()}")
-        print(f"   Number of speakers: {len(dataset.get_speaker_ids())}")
-        
-        # Get one sample
-        noisy, clean, info = dataset[0]
-        print(f"\n   Sample 0:")
-        print(f"     Noisy shape: {noisy.shape}")
-        print(f"     Clean shape: {clean.shape}")
-        print(f"     Info: {info}")
-        
-    except Exception as e:
-        print(f"   Could not load dataset: {e}")
-        print(f"   (This is expected if data hasn't been prepared yet)")
-    
-    # Test dataloader
-    print("\n2. Testing dataloader with collate_fn:")
-    try:
-        loader = create_dataloader(
-            dataset,
-            batch_size=4,
-            shuffle=True,
-            num_workers=0  # Use 0 for testing
-        )
-        
-        batch = next(iter(loader))
-        noisy_batch, clean_batch, lengths, info_list = batch
-        
-        print(f"   Batch shapes:")
-        print(f"     Noisy: {noisy_batch.shape}")
-        print(f"     Clean: {clean_batch.shape}")
-        print(f"     Lengths: {lengths}")
-        print(f"     Batch size: {len(info_list)}")
-        
-    except Exception as e:
-        print(f"   Could not create dataloader: {e}")
-    
-    print("\n✓ Dataset classes ready!")

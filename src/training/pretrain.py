@@ -1,15 +1,3 @@
-"""
-Pre-training Script for Session 0
-
-Trains the SepFormer backbone on multiple noise types.
-
-Paper Reference: Section IV.A
-- 40 epochs for pre-training
-- Adam optimizer with lr=15e-5
-- Batch size: 2
-- Loss: SI-SNR
-"""
-
 import torch
 import torch.nn as nn
 from pathlib import Path
@@ -26,20 +14,8 @@ def train_pretrain(
     data_root: str = "data/final_data",
     resume_from: str = None
 ):
-    """
-    Train Session 0 (pre-training)
-    
-    Paper: "we obtain the pre-trained model Θ0 using D0 via the 
-    scale-invariant source-to-noise ratio (SI-SNR) loss function"
-    
-    Args:
-        config: Project configuration
-        data_root: Root directory with session data
-        resume_from: Path to checkpoint to resume from
-    """
-    print("\n" + "="*80)
-    print("SESSION 0: PRE-TRAINING".center(80))
-    print("="*80 + "\n")
+
+    print("SESSION 0: PRE-TRAINING")
     
     # Device
     device = config.training.device
@@ -58,8 +34,7 @@ def train_pretrain(
             print(f"  GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB)")
     print()
     
-    # Create model - USE LNA MODEL FOR PRE-TRAINING (not plain SepFormer)
-    # This ensures DPT blocks get trained, not just sepformer.masking_network
+    # Create model - USE LNA MODEL FOR PRE-TRAINING 
     print("Creating LNA model for pre-training...")
     from ..models.lna_model import LNAModel
     
@@ -75,7 +50,7 @@ def train_pretrain(
         max_sessions=6
     )
     
-    # Set to session 0 mode (no adapters, just train base transformer)
+    # Set to session 0 mode (train base transformer)
     model.set_training_mode(session_id=0)
     
     print(f"  Total parameters: {model.get_num_parameters():,}")
@@ -88,7 +63,7 @@ def train_pretrain(
         print(f"  Training will be parallelized across GPUs: {list(range(torch.cuda.device_count()))}")
     
     # Create dataloaders
-    print("\nLoading Session 0 data...")
+    print("\nLoading Session 0 data")
     train_loader, val_loader, test_loader = get_session_dataloaders(
         data_root=data_root,
         session_id=0,
@@ -105,7 +80,7 @@ def train_pretrain(
     print(f"  Test batches: {len(test_loader)}")
     
     # Setup optimizer
-    print("\nSetting up optimizer...")
+    print("\nSetting up optimizer")
     optimizer = setup_optimizer(
         model,
         learning_rate=config.training.learning_rate,
@@ -119,7 +94,7 @@ def train_pretrain(
     # Setup scheduler
     scheduler = None
     if config.training.use_scheduler:
-        print(f"\nSetting up scheduler...")
+        print(f"\nSetting up scheduler")
         scheduler = setup_scheduler(
             optimizer,
             scheduler_type=config.training.scheduler_type,
@@ -145,10 +120,10 @@ def train_pretrain(
     
     # Verify model is on correct device
     model_for_check = trainer.model.module if isinstance(trainer.model, torch.nn.DataParallel) else trainer.model
-    print(f"\n✓ Model device: {next(model_for_check.parameters()).device}")
-    print(f"✓ Training will use: {trainer.device}")
+    print(f"\n Model device: {next(model_for_check.parameters()).device}")
+    print(f" Training will use: {trainer.device}")
     if isinstance(trainer.model, torch.nn.DataParallel):
-        print(f"✓ Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
+        print(f" Multi-GPU: Enabled ({torch.cuda.device_count()} GPUs)")
     
     # Resume from checkpoint if specified
     if resume_from:
@@ -156,9 +131,7 @@ def train_pretrain(
         trainer.load_checkpoint(Path(resume_from))
     
     # Train
-    print("\n" + "="*80)
-    print("STARTING TRAINING".center(80))
-    print("="*80 + "\n")
+    print("STARTING TRAINING")
     
     print(f"Training for {config.training.pretrain_epochs} epochs")
     print(f"Batch size: {config.data.train_batch_size}")
@@ -176,9 +149,8 @@ def train_pretrain(
     )
     
     # Final evaluation on test set
-    print("\n" + "="*80)
-    print("FINAL EVALUATION ON TEST SET".center(80))
-    print("="*80 + "\n")
+
+    print("FINAL EVALUATION ON TEST SET")
     
     test_metrics = trainer.validate(test_loader, compute_metrics=True)
     
@@ -187,7 +159,7 @@ def train_pretrain(
         print(f"  {metric}: {value:.4f}")
     
     # Save final model in LNA format for incremental learning
-    print("\nSaving pre-trained LNA model for incremental learning...")
+    print("\nSaving pre-trained LNA model for incremental learning")
     
     # Model is already LNA format - just save it directly
     # Handle DataParallel: unwrap model if needed
@@ -202,14 +174,12 @@ def train_pretrain(
         test_metrics=test_metrics
     )
     
-    print(f"✓ Pre-trained LNA model saved: {lna_checkpoint_path}")
-    print("\nReady for incremental training!")
+    print(f" Pre-trained LNA model saved: {lna_checkpoint_path}")
     
     return history, test_metrics
 
 
 def main():
-    """Main function for CLI"""
     parser = argparse.ArgumentParser(description="Pre-train SepFormer (Session 0)")
     parser.add_argument(
         "--data_root",
@@ -256,7 +226,7 @@ def main():
         resume_from=args.resume
     )
     
-    print("\n✓ Pre-training complete!")
+    print("\n Pretraining complete")
 
 
 if __name__ == "__main__":

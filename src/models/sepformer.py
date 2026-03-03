@@ -1,21 +1,3 @@
-"""
-SepFormer Backbone for Speech Enhancement
-
-This module wraps SpeechBrain's SepFormer implementation to serve as
-the backbone for the LNA system.
-
-Paper Reference: Section III.A, Reference [17]
-
-Reference [17]: "Attention is All You Need in Speech Separation"
-Subakan et al., ICASSP 2021
-
-SepFormer Architecture:
-1. Encoder: 1D Conv → learns latent representation
-2. Masking Network: Transformer-based (our focus for adapters)
-3. Decoder: Transposed Conv → reconstructs waveform
-
-Paper: "We adopt Sepformer as the backbone" (Section III.B)
-"""
 
 import torch
 import torch.nn as nn
@@ -36,12 +18,6 @@ except ImportError:
 
 
 class SimplifiedEncoder(nn.Module):
-    """
-    SepFormer Encoder matching SpeechBrain's implementation.
-    
-    Architecture: Conv1d (no bias, no padding) → ReLU
-    Reference: SpeechBrain speechbrain/lobes/models/dual_path.py Encoder class
-    """
     
     def __init__(
         self,
@@ -58,25 +34,14 @@ class SimplifiedEncoder(nn.Module):
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [B, 1, T] audio waveform
-        Returns:
-            [B, N, L] encoded representation where L = floor((T - kernel_size) / stride) + 1
-        """
+
         x = self.conv(x)
         x = torch.relu(x)
         return x
 
 
 class SimplifiedDecoder(nn.Module):
-    """
-    SepFormer Decoder matching SpeechBrain's implementation.
-    
-    Architecture: ConvTranspose1d (no bias, no padding)
-    Reference: SpeechBrain speechbrain/lobes/models/dual_path.py Decoder class
-    """
-    
+
     def __init__(
         self,
         in_channels: int = 256,
@@ -92,13 +57,7 @@ class SimplifiedDecoder(nn.Module):
         )
     
     def forward(self, x: torch.Tensor, target_length: Optional[int] = None) -> torch.Tensor:
-        """
-        Args:
-            x: [B, N, L] encoded representation
-            target_length: Target output length (for trimming)
-        Returns:
-            [B, 1, T] reconstructed waveform
-        """
+
         x = self.conv_transpose(x)
         
         if target_length is not None:
@@ -112,15 +71,7 @@ class SimplifiedDecoder(nn.Module):
 
 
 class SimplifiedMaskingNetwork(nn.Module):
-    """
-    Simplified masking network for development/testing
-    
-    Real SepFormer masking network:
-    - Dual-path transformer architecture
-    - Processes local and global context
-    - Predicts mask for enhancement
-    """
-    
+
     def __init__(
         self,
         in_channels: int = 256,
@@ -148,12 +99,7 @@ class SimplifiedMaskingNetwork(nn.Module):
         self.output_activation = nn.Sigmoid()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [B, N, L] encoded features
-        Returns:
-            [B, N, L] mask
-        """
+
         # Transpose for transformer: [B, L, N]
         x = x.transpose(1, 2)
         
@@ -172,31 +118,7 @@ class SimplifiedMaskingNetwork(nn.Module):
 
 
 class SepFormer(nn.Module):
-    """
-    SepFormer model for speech enhancement
-    
-    Paper Reference: Section III.B
-    "We adopt Sepformer as the backbone, where the network parameters 
-    are kept the same as those in [17]."
-    
-    Architecture (from Reference [17]):
-        Input waveform [B, 1, T]
-            ↓
-        Encoder: Conv1D → [B, N, L]
-            ↓
-        Masking Network: Transformer → [B, N, L]
-            ↓
-        Mask × Encoded → [B, N, L]
-            ↓
-        Decoder: ConvTranspose1D → [B, 1, T]
-            ↓
-        Enhanced waveform [B, 1, T]
-    
-    Parameters from paper Section IV.A:
-    - N = 256 (number of basis signals)
-    - L = 16 (length of basis signals)
-    - Transformer: 8 layers, 8 heads
-    """
+
     
     def __init__(
         self,
@@ -208,16 +130,7 @@ class SepFormer(nn.Module):
         dropout: float = 0.1,
         use_speechbrain: bool = True
     ):
-        """
-        Args:
-            n_basis: Number of basis signals (N in paper)
-            kernel_size: Kernel size for encoder/decoder (L in paper)
-            num_layers: Number of transformer layers
-            nhead: Number of attention heads
-            dim_feedforward: FFN dimension
-            dropout: Dropout probability
-            use_speechbrain: Whether to use SpeechBrain's implementation
-        """
+
         super().__init__()
         
         self.n_basis = n_basis
@@ -246,7 +159,7 @@ class SepFormer(nn.Module):
         dim_feedforward: int,
         dropout: float
     ):
-        """Build simplified model for development"""
+        #Build simplified model for development
         self.encoder = SimplifiedEncoder(kernel_size, n_basis)
         self.masking_network = SimplifiedMaskingNetwork(
             n_basis, num_layers, nhead, dim_feedforward, dropout
@@ -262,11 +175,7 @@ class SepFormer(nn.Module):
         dim_feedforward: int,
         dropout: float
     ):
-        """
-        Build model using SpeechBrain's Dual-Path architecture
-        
-        This is the full SepFormer from the paper.
-        """
+
         # Encoder - Use standard PyTorch Conv1d since SpeechBrain Conv1d has different API
         self.encoder = nn.Conv1d(
             in_channels=1,
@@ -276,7 +185,7 @@ class SepFormer(nn.Module):
             padding=kernel_size // 2
         )
         
-        # Masking Network (Dual-Path Transformer) - This is the key component from paper
+        # Masking Network (Dual-Path Transformer) 
         self.masking_network = Dual_Path_Model(
             in_channels=n_basis,
             out_channels=n_basis,
@@ -290,7 +199,7 @@ class SepFormer(nn.Module):
             linear_layer_after_inter_intra=False
         )
         
-        # Decoder - Use standard PyTorch
+        # Decoder 
         self.decoder = nn.ConvTranspose1d(
             in_channels=n_basis,
             out_channels=1,
@@ -304,17 +213,7 @@ class SepFormer(nn.Module):
         noisy: torch.Tensor,
         return_mask: bool = False
     ) -> torch.Tensor:
-        """
-        Forward pass through SepFormer
-        
-        Args:
-            noisy: Noisy input waveform [B, 1, T] or [B, T]
-            return_mask: If True, return (enhanced, mask)
-        
-        Returns:
-            enhanced: Enhanced waveform [B, 1, T]
-            (optional) mask: Estimated mask [B, N, L]
-        """
+      
         # Ensure input is [B, 1, T]
         if noisy.dim() == 2:
             noisy = noisy.unsqueeze(1)
@@ -338,18 +237,7 @@ class SepFormer(nn.Module):
         return enhanced
     
     def get_encoder_output(self, noisy: torch.Tensor) -> torch.Tensor:
-        """
-        Get encoder output for noise selector
-        
-        Paper Section III.D:
-        "We use the feature extractor E(·; φ_E^0) of the pre-trained model"
-        
-        Args:
-            noisy: Noisy input [B, 1, T]
-        
-        Returns:
-            Encoded features [B, N, L]
-        """
+
         if noisy.dim() == 2:
             noisy = noisy.unsqueeze(1)
         
@@ -359,21 +247,13 @@ class SepFormer(nn.Module):
         return encoded
     
     def freeze_encoder(self):
-        """
-        Freeze encoder parameters
-        
-        Paper: "the parameters of the encoder, φ_E^0, remain unchanged"
-        """
+
         for param in self.encoder.parameters():
             param.requires_grad = False
         print("Encoder frozen (φ_E^0)")
     
     def freeze_masking_network(self):
-        """
-        Freeze masking network parameters
-        
-        Paper: "Masking network: θ^0 (frozen after pre-training)"
-        """
+
         if self.masking_network is not None:
             for param in self.masking_network.parameters():
                 param.requires_grad = False
@@ -382,12 +262,7 @@ class SepFormer(nn.Module):
             print("Masking network not present (using adapter layers instead)")
     
     def freeze_backbone(self):
-        """
-        Freeze encoder and masking network (for incremental learning)
-        
-        Paper: "we employ a frozen pre-trained model to train and retain 
-        a domain-specific adapter for each newly encountered domain"
-        """
+
         self.freeze_encoder()
         self.freeze_masking_network()
         print("Backbone frozen (encoder + masking network)")
@@ -399,10 +274,6 @@ class SepFormer(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
 
-# ============================================================================
-# Factory Function
-# ============================================================================
-
 def create_sepformer(
     n_basis: int = 256,
     kernel_size: int = 16,
@@ -413,22 +284,7 @@ def create_sepformer(
     pretrained: bool = False,
     checkpoint_path: Optional[str] = None
 ) -> SepFormer:
-    """
-    Factory function to create SepFormer model
-    
-    Args:
-        n_basis: Number of basis signals (paper: 256)
-        kernel_size: Encoder/decoder kernel size (paper: 16)
-        num_layers: Number of transformer layers (paper: 8)
-        nhead: Number of attention heads (paper: 8)
-        dim_feedforward: FFN dimension (paper: 1024)
-        dropout: Dropout rate (paper: 0.1)
-        pretrained: Load pre-trained weights
-        checkpoint_path: Path to checkpoint file
-    
-    Returns:
-        SepFormer model
-    """
+
     model = SepFormer(
         n_basis=n_basis,
         kernel_size=kernel_size,
@@ -446,48 +302,3 @@ def create_sepformer(
     return model
 
 
-# ============================================================================
-# Demo and Testing
-# ============================================================================
-
-if __name__ == "__main__":
-    print("Testing SepFormer model...")
-    
-    # Create model
-    print("\n1. Creating SepFormer:")
-    model = SepFormer(
-        n_basis=256,
-        kernel_size=16,
-        num_layers=2,  # Small for testing
-        nhead=8,
-        use_speechbrain=False  # Use simplified for testing
-    )
-    
-    print(f"   Total parameters: {model.get_num_parameters():,}")
-    print(f"   Trainable parameters: {model.get_num_parameters(trainable_only=True):,}")
-    
-    # Test forward pass
-    print("\n2. Testing forward pass:")
-    batch_size = 2
-    audio_length = 16000  # 2 seconds at 8kHz
-    
-    noisy = torch.randn(batch_size, 1, audio_length)
-    enhanced = model(noisy)
-    
-    print(f"   Input shape: {noisy.shape}")
-    print(f"   Output shape: {enhanced.shape}")
-    assert enhanced.shape == noisy.shape, "Output shape mismatch!"
-    
-    # Test encoder output
-    print("\n3. Testing encoder output (for noise selector):")
-    encoded = model.get_encoder_output(noisy)
-    print(f"   Encoded shape: {encoded.shape}")
-    print(f"   [B, N, L] = [{encoded.shape[0]}, {encoded.shape[1]}, {encoded.shape[2]}]")
-    
-    # Test freezing
-    print("\n4. Testing parameter freezing:")
-    print(f"   Before freezing: {model.get_num_parameters(trainable_only=True):,} trainable")
-    model.freeze_backbone()
-    print(f"   After freezing: {model.get_num_parameters(trainable_only=True):,} trainable")
-    
-    print("\n✓ SepFormer model working!")

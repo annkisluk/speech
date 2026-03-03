@@ -1,13 +1,3 @@
-"""
-Evaluation Metrics for Speech Enhancement
-
-Implements the three metrics used in the paper:
-1. SI-SNR (Scale-Invariant Signal-to-Noise Ratio)
-2. SDR (Signal-to-Distortion Ratio)
-3. PESQ (Perceptual Evaluation of Speech Quality)
-
-Paper Reference: Section IV.A - Experimental Setup
-"""
 
 import torch
 import numpy as np
@@ -29,24 +19,12 @@ except ImportError:
     warnings.warn("STOI not installed. Install with: pip install pystoi")
 
 
+#calc si-snr:
 def calculate_si_snr(
     estimate: torch.Tensor,
     target: torch.Tensor,
     eps: float = 1e-8
 ) -> torch.Tensor:
-    """
-    Calculate Scale-Invariant Signal-to-Noise Ratio (SI-SNR)
-    
-    Paper Reference: Loss function from [21]
-    
-    Args:
-        estimate: Enhanced speech [B, T] or [B, 1, T]
-        target: Clean speech [B, T] or [B, 1, T]
-        eps: Small constant for numerical stability
-    
-    Returns:
-        SI-SNR values in dB [B]
-    """
     # Ensure shape is [B, T]
     if estimate.dim() == 3:
         estimate = estimate.squeeze(1)
@@ -75,25 +53,13 @@ def calculate_si_snr(
     
     return si_snr
 
-
+# calc sdr:
 def calculate_sdr(
     estimate: torch.Tensor,
     target: torch.Tensor,
     eps: float = 1e-8
 ) -> torch.Tensor:
-    """
-    Calculate Signal-to-Distortion Ratio (SDR)
-    
-    Paper Reference: Section IV.A
-    
-    Args:
-        estimate: Enhanced speech [B, T] or [B, 1, T]
-        target: Clean speech [B, T] or [B, 1, T]
-        eps: Small constant for numerical stability
-    
-    Returns:
-        SDR values in dB [B]
-    """
+
     # Ensure shape is [B, T]
     if estimate.dim() == 3:
         estimate = estimate.squeeze(1)
@@ -116,25 +82,14 @@ def calculate_sdr(
     
     return sdr
 
-
+# calc pesq:
 def calculate_pesq(
     estimate: np.ndarray,
     target: np.ndarray,
     sr: int = 8000,
     mode: str = 'nb'
 ) -> float:
-    """
-    Calculate PESQ (Perceptual Evaluation of Speech Quality)
-    
-    Args:
-        estimate: Enhanced speech (numpy array, 1D)
-        target: Clean speech (numpy array, 1D)
-        sr: Sample rate (8000 for narrowband)
-        mode: 'nb' (narrowband) for 8kHz
-    
-    Returns:
-        PESQ score (higher is better, range: -0.5 to 4.5)
-    """
+
     if not PESQ_AVAILABLE:
         warnings.warn("PESQ not available, returning 0.0")
         return 0.0
@@ -159,24 +114,13 @@ def calculate_pesq(
 
 
 class MetricsCalculator:
-    """
-    Unified metrics calculator
-    
-    Usage:
-        calc = MetricsCalculator(sample_rate=8000)
-        metrics = calc.calculate_all(enhanced, clean)
-    """
-    
+
     def __init__(
         self,
         sample_rate: int = 8000,
         metrics: List[str] = ['si_snr', 'sdr', 'pesq']
     ):
-        """
-        Args:
-            sample_rate: Audio sample rate (8000 as per paper)
-            metrics: List of metrics to compute
-        """
+
         self.sample_rate = sample_rate
         self.metrics = metrics
         self.pesq_mode = 'nb' if sample_rate == 8000 else 'wb'
@@ -186,16 +130,7 @@ class MetricsCalculator:
         estimate: torch.Tensor,
         target: torch.Tensor
     ) -> Dict[str, float]:
-        """
-        Calculate all metrics for a single sample
-        
-        Args:
-            estimate: Enhanced speech [T] or [1, T]
-            target: Clean speech [T] or [1, T]
-        
-        Returns:
-            Dictionary with metric values
-        """
+
         results = {}
         
         # Ensure 1D tensors
@@ -239,17 +174,7 @@ class MetricsCalculator:
         target_batch: torch.Tensor,
         lengths: Optional[torch.Tensor] = None
     ) -> Dict[str, List[float]]:
-        """
-        Calculate metrics for a batch of samples
-        
-        Args:
-            estimate_batch: Enhanced speech [B, T] or [B, 1, T]
-            target_batch: Clean speech [B, T] or [B, 1, T]
-            lengths: Actual lengths (for handling padding) [B]
-        
-        Returns:
-            Dictionary with lists of metric values
-        """
+
         batch_size = estimate_batch.shape[0]
         results = {metric: [] for metric in self.metrics}
         
@@ -282,15 +207,7 @@ class MetricsCalculator:
         self,
         metrics_list: List[Dict[str, float]]
     ) -> Dict[str, float]:
-        """
-        Aggregate metrics from multiple samples
-        
-        Args:
-            metrics_list: List of metric dictionaries
-        
-        Returns:
-            Dictionary with mean values
-        """
+
         aggregated = {}
         
         for metric in self.metrics:
@@ -301,27 +218,3 @@ class MetricsCalculator:
         
         return aggregated
 
-
-if __name__ == "__main__":
-    print("Testing metrics...")
-    
-    # Test signals
-    sr = 8000
-    duration = 2
-    t = torch.linspace(0, duration, sr * duration)
-    
-    clean = torch.sin(2 * np.pi * 440 * t)
-    perfect = clean.clone()
-    noisy = clean + 0.1 * torch.randn_like(clean)
-    enhanced = clean + 0.05 * torch.randn_like(clean)
-    
-    print("\nSI-SNR:")
-    si_snr_perfect = calculate_si_snr(perfect.unsqueeze(0), clean.unsqueeze(0))
-    si_snr_noisy = calculate_si_snr(noisy.unsqueeze(0), clean.unsqueeze(0))
-    si_snr_enhanced = calculate_si_snr(enhanced.unsqueeze(0), clean.unsqueeze(0))
-    
-    print(f"  Perfect: {si_snr_perfect.item():.2f} dB")
-    print(f"  Noisy: {si_snr_noisy.item():.2f} dB")
-    print(f"  Enhanced: {si_snr_enhanced.item():.2f} dB")
-    
-    print("\n✓ Metrics working!")

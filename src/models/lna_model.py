@@ -1,20 +1,3 @@
-"""
-Complete LNA (Learning Noise Adapters) Model
-
-This module integrates:
-1. SepFormer backbone (frozen after pre-training)
-2. Domain-specific adapters (FFL-A and MHA-A)
-3. Session-specific decoders
-4. Noise selector for inference
-
-Paper Reference: Section III - The Proposed Method
-
-Architecture matches SpeechBrain's SepFormer:
-- 2 Dual-Path Transformer (DPT) blocks
-- Each DPT block: IntraTransformer(8 layers) + InterTransformer(8 layers)
-- Total: 32 transformer layers (~25.6M backbone params)
-- Skip connections + Linear + GroupNorm between intra/inter stages
-"""
 
 import torch
 import torch.nn as nn
@@ -27,15 +10,7 @@ from .adapters import TransformerBlockWithAdapters, FFLAdapter, MHAAdapter
 
 
 class DualPathBlock(nn.Module):
-    """
-    One Dual-Path Transformer (DPT) Block from SepFormer.
-    
-    Structure (matching SpeechBrain's Dual_Computation_Block):
-        Input [B, N, K, S]
-        → Intra-chunk: 8 transformer layers on [B*S, K, N] → Linear → Reshape + Skip → GroupNorm
-        → Inter-chunk: 8 transformer layers on [B*K, S, N] → Linear → Reshape + Skip → GroupNorm
-        → Output [B, N, K, S]
-    """
+
     
     def __init__(
         self,
@@ -86,16 +61,10 @@ class DualPathBlock(nn.Module):
         self.inter_norm = nn.GroupNorm(1, d_model)
     
     def forward(self, x: torch.Tensor, session_id: int = 0) -> torch.Tensor:
-        """
-        Args:
-            x: [B, N, K, S] dual-path segments
-            session_id: Current session (0=pretrain, >0 uses adapters)
-        Returns:
-            [B, N, K, S]
-        """
+
         B, N, K, S = x.shape
         
-        # --- Intra-chunk processing (local context within each chunk) ---
+        #Intra-chunk processing (local context within each chunk)
         intra = x.permute(0, 3, 2, 1).contiguous().reshape(B * S, K, N)
         
         adapter_kwargs = {}
@@ -113,7 +82,7 @@ class DualPathBlock(nn.Module):
             intra = intra + x  # Skip connection around intra
         intra = self.intra_norm(intra)
         
-        # --- Inter-chunk processing (global context across chunks) ---
+        # Inter-chunk processing (global context across chunks)
         inter = intra.permute(0, 2, 3, 1).contiguous().reshape(B * K, S, N)
         
         for layer in self.inter_layers:
@@ -127,7 +96,7 @@ class DualPathBlock(nn.Module):
         return inter
     
     def add_new_session_adapters(self, bottleneck_dim: int = 1):
-        """Add adapter pair to all intra + inter layers for a new session."""
+        #Add adapter pair to all intra + inter layers for a new session
         indices = []
         for layer in self.intra_layers:
             indices.append(layer.add_new_session_adapters(bottleneck_dim))
@@ -136,39 +105,26 @@ class DualPathBlock(nn.Module):
         return indices
     
     def freeze_session_adapters(self, adapter_idx: int):
-        """Freeze a session's adapters in all layers."""
+        #Freeze a session's adapters in all layers
         for layer in self.intra_layers:
             layer.freeze_session_adapters(adapter_idx)
         for layer in self.inter_layers:
             layer.freeze_session_adapters(adapter_idx)
     
     def set_active_adapters(self, adapter_idx: int):
-        """Set active adapter in all layers."""
+        #Set active adapter in all layers
         for layer in self.intra_layers:
             layer.set_active_adapters(adapter_idx)
         for layer in self.inter_layers:
             layer.set_active_adapters(adapter_idx)
     
     def get_all_transformer_layers(self) -> List[TransformerBlockWithAdapters]:
-        """Return flat list of all TransformerBlockWithAdapters."""
+        #Return flat list of all TransformerBlockWithAdapters
         return list(self.intra_layers) + list(self.inter_layers)
 
 
 class LNAModel(nn.Module):
-    """
-    Complete Learning Noise Adapters Model
-    
-    Paper Reference: Figure 2 - Framework of LNA
-    
-    Architecture matches SpeechBrain's SepFormer:
-        - Encoder: Conv1d(1, 256, 16, stride=8) → ReLU
-        - Masking Network: GroupNorm → Segment → 2 DPT blocks → Overlap-add → PReLU → Conv1d → ReLU
-        - Each DPT block: 8 intra layers + linear + norm → 8 inter layers + linear + norm
-        - Total: 32 transformer layers (~25.6M backbone params)
-        - Session-specific adapters inserted in parallel in each transformer layer
-        - Session-specific decoders: ConvTranspose1d(256, 1, 16, stride=8)
-    """
-    
+   
     def __init__(
         self,
         n_basis: int = 256,
@@ -184,21 +140,6 @@ class LNAModel(nn.Module):
         chunk_size: int = 250,
         num_blocks: int = 2
     ):
-        """
-        Args:
-            n_basis: Number of basis signals (N=256 in paper)
-            kernel_size: Encoder/decoder kernel size (L=16 in paper)
-            num_layers: Transformer layers per direction per DPT block (8 in paper)
-            nhead: Number of attention heads (8 in paper)
-            dim_feedforward: FFN dimension (1024 in paper)
-            dropout: Dropout rate
-            adapter_bottleneck_dim: Bottleneck dim for adapters (Ĉ=1 in paper)
-            max_sessions: Maximum number of incremental sessions
-            use_mha_adapter: Whether to use MHA adapters
-            use_ffl_adapter: Whether to use FFL adapters
-            chunk_size: Chunk size K for dual-path segmentation (250 in paper)
-            num_blocks: Number of DPT blocks (2 in paper, total layers = num_blocks * 2 * num_layers)
-        """
         super().__init__()
         
         self.n_basis = n_basis
@@ -231,7 +172,7 @@ class LNAModel(nn.Module):
         self.input_norm = nn.GroupNorm(1, n_basis)
         
         # Dual-Path Transformer Blocks
-        # Paper/SpeechBrain: 2 DPT blocks, each with 8 intra + 8 inter layers
+        # 2 DPT blocks, each with 8 intra + 8 inter layers
         # Total: 2 × (8 + 8) = 32 transformer layers
         self.dpt_blocks = nn.ModuleList([
             DualPathBlock(
@@ -268,19 +209,6 @@ class LNAModel(nn.Module):
         session_id: int,
         bottleneck_dim: Optional[int] = None
     ) -> Dict[str, any]:
-        """
-        Add adapters and decoder for a new incremental session
-        
-        Paper: "When faced with new noise domains, LNAs dynamically train 
-        noise adapters tailored to adapt to the specific domain"
-        
-        Args:
-            session_id: ID of new session (1, 2, 3, ...)
-            bottleneck_dim: Override default bottleneck dimension
-        
-        Returns:
-            Dictionary with information about added components
-        """
         if session_id == 0:
             raise ValueError("Session 0 is pre-training, use pretrain mode")
         
@@ -337,25 +265,6 @@ class LNAModel(nn.Module):
         freeze_previous_adapters: bool = True,
         freeze_previous_decoders: bool = True
     ):
-        """
-        Set training mode for a specific session
-        
-        Paper: Section III - Incremental Learning Configuration
-        
-        For session 0 (pre-training):
-            - Train everything
-        
-        For session t > 0 (incremental):
-            - Freeze: encoder (φ_E^0), masking network (θ^0)
-            - Freeze: previous adapters and decoders
-            - Train: new adapters (A^t_f, A^t_m) and decoder (φ^t_D)
-        
-        Args:
-            session_id: Current training session
-            freeze_backbone: Freeze encoder + masking network (paper: always True for t>0)
-            freeze_previous_adapters: Freeze adapters from previous sessions
-            freeze_previous_decoders: Freeze decoders from previous sessions
-        """
         self.current_session = session_id
         
         if session_id == 0:
@@ -447,12 +356,7 @@ class LNAModel(nn.Module):
             print(f"  Trainable parameters: {self.get_num_parameters(trainable_only=True):,}")
     
     def set_inference_mode(self, session_id: int):
-        """
-        Set inference mode for a specific session
-        
-        Args:
-            session_id: Session to use for inference
-        """
+
         self.eval()
         self.current_session = session_id
         
@@ -464,18 +368,7 @@ class LNAModel(nn.Module):
         print(f"Inference mode: Session {session_id}")
     
     def _segment(self, x, chunk_size):
-        """Segment encoded features into overlapping chunks (50% overlap).
-        
-        Paper: SepFormer uses dual-path segmentation.
-        
-        Args:
-            x: [B, N, L] encoded features
-            chunk_size: K, the chunk length
-        
-        Returns:
-            segments: [B, N, K, S] chunked features
-            original_length: L for later reconstruction
-        """
+
         B, N, L = x.shape
         hop = chunk_size // 2  # 50% overlap
         
@@ -499,19 +392,7 @@ class LNAModel(nn.Module):
         return segments, L
     
     def _overlap_add(self, segments, chunk_size, original_length):
-        """Reconstruct signal from overlapping segments via overlap-add.
-        
-        Uses fold (col2im) for proper vectorized overlap-add, avoiding
-        in-place ops that cause CUDA misaligned address errors with DataParallel.
-        
-        Args:
-            segments: [B, N, K, S]
-            chunk_size: K
-            original_length: L before padding
-        
-        Returns:
-            output: [B, N, L]
-        """
+
         B, N, K, S = segments.shape
         hop = chunk_size // 2
         out_len = (S - 1) * hop + chunk_size
@@ -545,27 +426,7 @@ class LNAModel(nn.Module):
         noisy: torch.Tensor,
         session_id: Optional[int] = None
     ) -> torch.Tensor:
-        """
-        Forward pass through LNA model with Dual-Path processing.
-        
-        Paper: SepFormer backbone with intra-chunk and inter-chunk attention.
-        
-        Flow:
-            1. Encode noisy waveform
-            2. Segment into overlapping chunks
-            3. Alternate intra-chunk (local) and inter-chunk (global) transformer layers
-            4. Generate mask from transformer output
-            5. Apply mask to encoded features
-            6. Overlap-add to reconstruct
-            7. Decode with session-specific decoder
-        
-        Args:
-            noisy: Noisy input waveform [B, 1, T] or [B, T]
-            session_id: Which session's decoder to use (None = current_session)
-        
-        Returns:
-            Enhanced waveform [B, 1, T]
-        """
+
         if noisy.dim() == 2:
             noisy = noisy.unsqueeze(1)
         
@@ -621,29 +482,17 @@ class LNAModel(nn.Module):
         return enhanced
     
     def get_encoder_features(self, noisy: torch.Tensor) -> torch.Tensor:
-        """
-        Extract features from encoder for noise selector
-        
-        Paper Section III.D:
-        "We use the feature extractor E(·; φ_E^0) of the pre-trained model 
-        to initialize the domain selector"
-        
-        Args:
-            noisy: Noisy input [B, 1, T]
-        
-        Returns:
-            Encoded features [B, N, L]
-        """
+
         return self.sepformer.get_encoder_output(noisy)
     
     def get_num_parameters(self, trainable_only: bool = False) -> int:
-        """Count parameters in model"""
+        #Count parameters in model
         if trainable_only:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
     
     def get_adapter_info(self) -> Dict:
-        """Get information about all adapters"""
+        #Get information about all adapters
         adapter_params = 0
         total_transformer_layers = 0
         for block in self.dpt_blocks:
@@ -677,15 +526,7 @@ class LNAModel(nn.Module):
         optimizer_state: Optional[Dict] = None,
         **kwargs
     ):
-        """
-        Save model checkpoint
-        
-        Args:
-            path: Path to save checkpoint
-            session_id: Current session ID
-            optimizer_state: Optimizer state dict
-            **kwargs: Additional metadata
-        """
+
         checkpoint = {
             'session_id': session_id,
             'model_state_dict': self.state_dict(),
@@ -714,17 +555,7 @@ class LNAModel(nn.Module):
         load_optimizer: bool = False,
         strict: bool = True
     ) -> Dict:
-        """
-        Load model checkpoint
-        
-        Args:
-            path: Path to checkpoint
-            load_optimizer: Whether to return optimizer state
-            strict: Whether to strictly enforce state_dict keys match
-        
-        Returns:
-            Checkpoint dictionary
-        """
+
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         self.load_state_dict(checkpoint['model_state_dict'], strict=strict)
         self.current_session = checkpoint['session_id']
@@ -734,62 +565,3 @@ class LNAModel(nn.Module):
         print(f"  Adapter info: {checkpoint.get('adapter_info', {})}")
         
         return checkpoint
-
-
-# ============================================================================
-# Demo and Testing
-# ============================================================================
-
-if __name__ == "__main__":
-    print("Testing LNA Model...")
-    
-    # Create model with small config for testing
-    print("\n1. Creating LNA Model (small test config):")
-    model = LNAModel(
-        n_basis=256,
-        num_layers=2,  # Small for testing (real: 8)
-        num_blocks=1,  # Small for testing (real: 2)
-        nhead=8,
-        adapter_bottleneck_dim=1,
-        max_sessions=5
-    )
-    
-    print(f"   Total parameters: {model.get_num_parameters():,}")
-    
-    # Test pre-training mode (Session 0)
-    print("\n2. Testing Session 0 (Pre-training):")
-    model.set_training_mode(session_id=0)
-    
-    noisy = torch.randn(2, 1, 16000)
-    enhanced = model(noisy, session_id=0)
-    print(f"   Input: {noisy.shape}, Output: {enhanced.shape}")
-    
-    # Add incremental session
-    print("\n3. Adding Session 1 (Incremental):")
-    model.add_new_session(session_id=1, bottleneck_dim=1)
-    model.set_training_mode(session_id=1)
-    
-    enhanced = model(noisy, session_id=1)
-    print(f"   Session 1 output: {enhanced.shape}")
-    
-    # Add more sessions
-    print("\n4. Adding Sessions 2-3:")
-    for session_id in [2, 3]:
-        model.add_new_session(session_id=session_id)
-        print(f"   Added session {session_id}")
-    
-    # Check adapter info
-    print("\n5. Adapter Information:")
-    info = model.get_adapter_info()
-    for key, value in info.items():
-        print(f"   {key}: {value}")
-    
-    # Test checkpoint save/load
-    print("\n6. Testing checkpoint:")
-    model.save_checkpoint(
-        "checkpoints/test_lna.pt",
-        session_id=3,
-        test_metric=0.95
-    )
-    
-    print("\n✓ LNA Model working!")

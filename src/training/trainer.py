@@ -1,10 +1,3 @@
-"""
-Training Utilities and Trainer Class
-
-Generic training loop with checkpointing, logging, and early stopping.
-
-Paper Reference: Section IV.A - Training specifications
-"""
 
 import torch
 import torch.nn as nn
@@ -23,14 +16,7 @@ from ..evaluation.metrics import MetricsCalculator
 
 
 class Trainer:
-    """
-    Generic trainer for speech enhancement models
-    
-    Paper: Section IV.A
-    - Optimizer: Adam with lr=15e-5
-    - Loss: SI-SNR
-    - Training monitoring with validation
-    """
+
     
     def __init__(
         self,
@@ -43,17 +29,7 @@ class Trainer:
         checkpoint_dir: Optional[str] = None,
         max_grad_norm: float = 5.0
     ):
-        """
-        Args:
-            model: Model to train
-            optimizer: Optimizer
-            device: Device to use ('cuda', 'cpu', 'mps')
-            scheduler: Learning rate scheduler
-            use_amp: Use automatic mixed precision
-            log_dir: Directory for logs
-            checkpoint_dir: Directory for checkpoints
-            max_grad_norm: Maximum gradient norm for clipping
-        """
+
         self.model = model.to(device)
         self.optimizer = optimizer
         self.device = device
@@ -89,17 +65,6 @@ class Trainer:
         max_grad_norm: float = 5.0,
         log_every_n_steps: int = 100
     ) -> Dict[str, float]:
-        """
-        Train for one epoch
-        
-        Args:
-            train_loader: Training data loader
-            max_grad_norm: Maximum gradient norm for clipping
-            log_every_n_steps: Log frequency
-        
-        Returns:
-            Dictionary with training metrics
-        """
         self.model.train()
         
         total_loss = 0.0
@@ -216,18 +181,7 @@ class Trainer:
         chunk_size: int = 32000,
         chunk_overlap: int = 8000
     ) -> Dict[str, float]:
-        """
-        Validate model
-        
-        Args:
-            val_loader: Validation data loader
-            compute_metrics: Whether to compute detailed metrics
-        
-        Returns:
-            Dictionary with validation metrics
-        """
-        # Unwrap DataParallel for validation to avoid CUDA misaligned address
-        # errors in DataParallel's gather. Single GPU handles batch_size=2 fine.
+        # Unwrap DataParallel for validation 
         val_model = self.model.module if hasattr(self.model, 'module') else self.model
         val_model.eval()
 
@@ -237,7 +191,6 @@ class Trainer:
         total_loss = 0.0
         num_batches = 0
         
-        # For detailed metrics
         all_metrics = [] if compute_metrics else None
         metric_items = 0
         
@@ -263,7 +216,7 @@ class Trainer:
             total_loss += loss.item()
             num_batches += 1
             
-            # Compute detailed metrics
+            # Compute metrics
             if compute_metrics and metric_items < metrics_max_items:
                 remaining = metrics_max_items - metric_items
                 batch_size = noisy.shape[0]
@@ -305,23 +258,7 @@ class Trainer:
         save_every_n_epochs: int = 5,
         validate_every_n_epochs: int = 1
     ) -> Dict[str, list]:
-        """
-        Complete training loop
-        
-        Args:
-            train_loader: Training data loader
-            val_loader: Validation data loader
-            num_epochs: Number of epochs to train
-            early_stopping_patience: Patience for early stopping
-            save_every_n_epochs: Checkpoint save frequency
-            validate_every_n_epochs: Validation frequency
-        
-        Returns:
-            Training history
-        """
-        print(f"\n{'='*70}")
-        print(f"Starting Training".center(70))
-        print(f"{'='*70}\n")
+        print(f"Starting Training")
         
         history = {
             'train_loss': [],
@@ -333,7 +270,6 @@ class Trainer:
         skip_training = False
         if self.global_step > 0:
             if not getattr(self, '_epoch_validated', True):
-                # Resumed: training done but validation was interrupted
                 start_epoch = self.current_epoch
                 skip_training = True
                 print(f"Resuming epoch {self.current_epoch + 1}: skipping training, running pending validation")
@@ -351,7 +287,6 @@ class Trainer:
             epoch_start_time = time.time()
             
             if skip_training:
-                # Skip training this iteration — just need to validate
                 skip_training = False
             else:
                 # Train epoch
@@ -366,7 +301,7 @@ class Trainer:
                 print(f"  Train Loss: {train_metrics['train_loss']:.4f}")
                 print(f"  Learning Rate: {current_lr:.6f}")
                 
-                # Save checkpoint BEFORE validation (validated=False)
+                # Save checkpoint BEFORE validation
                 self._epoch_validated = False
                 if (epoch + 1) % save_every_n_epochs == 0:
                     self.save_checkpoint(
@@ -399,10 +334,10 @@ class Trainer:
                         self.checkpoint_dir / "best_model.pt",
                         val_metrics
                     )
-                    print("  ✓ New best model saved!")
+                    print(" New best model saved!")
                 else:
                     self.epochs_without_improvement += 1
-                    print(f"  No improvement for {self.epochs_without_improvement} epochs")
+                    print(f" No improvement for {self.epochs_without_improvement} epochs")
                 
                 # Early stopping
                 if self.epochs_without_improvement >= early_stopping_patience:
@@ -421,9 +356,7 @@ class Trainer:
             print(f"  Epoch time: {epoch_time:.2f}s")
             print()
         
-        print(f"\n{'='*70}")
-        print(f"Training Complete".center(70))
-        print(f"{'='*70}\n")
+        print(f"Training Complete")
         print(f"Best validation loss: {self.best_val_loss:.4f}")
         
         # Save final checkpoint
@@ -443,14 +376,7 @@ class Trainer:
         path: Path,
         metrics: Optional[Dict] = None
     ):
-        """
-        Save training checkpoint
-        
-        Args:
-            path: Path to save checkpoint
-            metrics: Optional metrics to save
-        """
-        # Unwrap DataParallel for portable checkpoints
+        # Unwrap DataParallel
         model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
         checkpoint = {
             'epoch': self.current_epoch,
@@ -472,12 +398,6 @@ class Trainer:
         print(f"Checkpoint saved: {path}")
     
     def load_checkpoint(self, path: Path):
-        """
-        Load training checkpoint
-        
-        Args:
-            path: Path to checkpoint
-        """
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         # Load into unwrapped model to handle DataParallel prefix differences
@@ -500,9 +420,7 @@ class Trainer:
             print(f"  Validation pending for epoch {self.current_epoch + 1}")
 
 
-# ============================================================================
 # Utility Functions
-# ============================================================================
 
 def setup_optimizer(
     model: nn.Module,
@@ -510,21 +428,7 @@ def setup_optimizer(
     weight_decay: float = 0.0,
     optimizer_type: str = 'adam'
 ) -> Optimizer:
-    """
-    Setup optimizer
-    
-    Paper: Uses Adam with lr=15e-5
-    
-    Args:
-        model: Model
-        learning_rate: Learning rate (paper: 15e-5)
-        weight_decay: Weight decay
-        optimizer_type: Optimizer type
-    
-    Returns:
-        Optimizer
-    """
-    # CRITICAL: Only optimize trainable parameters (frozen params should not be in optimizer)
+    # Only optimize trainable parameters 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     
     if optimizer_type == 'adam':
@@ -551,18 +455,6 @@ def setup_scheduler(
     patience: int = 3,
     factor: float = 0.5
 ) -> Optional[any]:
-    """
-    Setup learning rate scheduler
-    
-    Args:
-        optimizer: Optimizer
-        scheduler_type: Scheduler type
-        patience: Patience for ReduceLROnPlateau
-        factor: Factor to reduce LR
-    
-    Returns:
-        Scheduler
-    """
     if scheduler_type == 'plateau':
         scheduler = ReduceLROnPlateau(
             optimizer,
@@ -584,14 +476,3 @@ def setup_scheduler(
     return scheduler
 
 
-# ============================================================================
-# Demo and Testing
-# ============================================================================
-
-if __name__ == "__main__":
-    print("Testing Trainer...")
-    
-    # This is just a structure test
-    # Actual training would use real model and data
-    
-    print("\n✓ Trainer utilities ready!")

@@ -1,6 +1,3 @@
-"""
-Adapter Modules for Incremental Speech Enhancement
-"""
 
 import torch
 import torch.nn as nn
@@ -9,9 +6,7 @@ import math
 
 
 class Adapter(nn.Module):
-    """
-    Base adapter module: down-project -> ReLU -> up-project.
-    """
+
 
     def __init__(
         self,
@@ -20,13 +15,7 @@ class Adapter(nn.Module):
         activation: str = "relu",
         init_scale: float = 0.01
     ):
-        """
-        Args:
-            input_dim: Input and output dimension C
-            bottleneck_dim: Compressed dimension Ĉ (paper uses 1)
-            activation: Non-linearity between projections
-            init_scale: Small init scale so adapter starts near zero output
-        """
+
         super().__init__()
 
         self.input_dim = input_dim
@@ -50,22 +39,13 @@ class Adapter(nn.Module):
         self._init_weights(init_scale)
 
     def _init_weights(self, scale: float):
-        """
-        Initialize weights near zero so the adapter starts with minimal effect
-        on the frozen model's output, allowing stable training from the start.
-        """
+
         nn.init.normal_(self.down_project.weight, mean=0.0, std=scale)
         nn.init.zeros_(self.down_project.bias)
         nn.init.normal_(self.up_project.weight, mean=0.0, std=scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor [B, L, C]
 
-        Returns:
-            Adapter output [B, L, C] - a domain-specific correction signal
-        """
         h = self.down_project(x)   # [B, L, C] -> [B, L, Ĉ]
         h = self.activation(h)
         output = self.up_project(h) # [B, L, Ĉ] -> [B, L, C]
@@ -77,16 +57,7 @@ class Adapter(nn.Module):
 
 
 class AdapterWithSelector(nn.Module):
-    """
-    Manages a list of adapters (one per session) with beta gating.
 
-    Betas are binary switches set manually, not learned:
-    - During training session t: beta_t=1, all others=0
-    - During inference: beta_j=1 for domain j predicted by noise selector
-
-    Paper Equation (3): g_m = beta1*e1_m + beta2*e2_m + ... + betat*e^t_m
-    Paper Equation (6): beta^l = 1 if l == j, else 0
-    """
 
     def __init__(
         self,
@@ -96,14 +67,7 @@ class AdapterWithSelector(nn.Module):
         activation: str = "relu",
         init_scale: float = 0.01
     ):
-        """
-        Args:
-            input_dim: Input dimension
-            bottleneck_dim: Adapter bottleneck dimension
-            max_adapters: Maximum number of sessions supported
-            activation: Activation function
-            init_scale: Initialization scale
-        """
+
         super().__init__()
 
         self.input_dim = input_dim
@@ -123,12 +87,7 @@ class AdapterWithSelector(nn.Module):
         activation: str = "relu",
         init_scale: float = 0.01
     ) -> int:
-        """
-        Create and register a new adapter for a new session.
 
-        Returns:
-            Index of the newly created adapter
-        """
         if self.num_adapters >= self.max_adapters:
             raise ValueError(f"Maximum number of adapters ({self.max_adapters}) reached")
 
@@ -146,12 +105,7 @@ class AdapterWithSelector(nn.Module):
         return adapter_idx
 
     def set_active_adapter(self, adapter_idx: int):
-        """
-        Activate one adapter and deactivate all others by setting betas.
 
-        Args:
-            adapter_idx: Index of the adapter to activate
-        """
         if adapter_idx >= self.num_adapters:
             raise ValueError(f"Adapter {adapter_idx} does not exist")
 
@@ -163,16 +117,7 @@ class AdapterWithSelector(nn.Module):
         x: torch.Tensor,
         adapter_idx: Optional[int] = None
     ) -> torch.Tensor:
-        """
-        Compute weighted sum of adapter outputs using beta values.
 
-        Args:
-            x: Input tensor [B, L, C]
-            adapter_idx: If given, bypass betas and use this adapter directly
-
-        Returns:
-            Combined adapter output [B, L, C]
-        """
         # No adapters yet (pre-training phase) - contribute nothing
         if self.num_adapters == 0:
             return torch.zeros_like(x)
@@ -192,12 +137,7 @@ class AdapterWithSelector(nn.Module):
         return output
 
     def freeze_adapter(self, adapter_idx: int):
-        """
-        Freeze a trained adapter so it cannot be modified in future sessions.
 
-        Args:
-            adapter_idx: Index of adapter to freeze
-        """
         if adapter_idx >= self.num_adapters:
             raise ValueError(f"Adapter {adapter_idx} does not exist")
 
@@ -205,12 +145,7 @@ class AdapterWithSelector(nn.Module):
             param.requires_grad = False
 
     def unfreeze_adapter(self, adapter_idx: int):
-        """
-        Unfreeze an adapter to make it trainable again.
 
-        Args:
-            adapter_idx: Index of adapter to unfreeze
-        """
         if adapter_idx >= self.num_adapters:
             raise ValueError(f"Adapter {adapter_idx} does not exist")
 
@@ -228,45 +163,18 @@ class AdapterWithSelector(nn.Module):
 
 
 class FFLAdapter(AdapterWithSelector):
-    """
-    Feed-Forward Layer Adapter (FFL-A).
-    Inserted after the FFN sub-layer in each transformer block.
-    Architecturally identical to MHAAdapter - named separately for clarity.
-    """
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.adapter_type = "FFL"
 
 
 class MHAAdapter(AdapterWithSelector):
-    """
-    Multi-Head Attention Adapter (MHA-A).
-    Inserted after the MHA sub-layer in each transformer block.
-    Architecturally identical to FFLAdapter - named separately for clarity.
-    """
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.adapter_type = "MHA"
 
 
 class TransformerBlockWithAdapters(nn.Module):
-    """
-    Standard transformer block (MHA + FFN) with FFL-A and MHA-A inserted.
-
-    The frozen pre-trained weights are unchanged. Each adapter adds a small
-    domain-specific correction in parallel with its respective sub-layer.
-
-    Signal flow (Paper Equations 1-2):
-        x -> LayerNorm -> h
-             h -> MHA -----------> sum --> residual add -> x'
-             h -> MHA-A(adapter) -/
-        x' -> LayerNorm -> h'
-             h' -> FFN -----------> sum --> residual add -> output
-             h' -> FFL-A(adapter) -/
-    """
-
     def __init__(
         self,
         d_model: int = 256,
@@ -278,17 +186,7 @@ class TransformerBlockWithAdapters(nn.Module):
         use_ffl_adapter: bool = True,
         max_adapters: int = 10
     ):
-        """
-        Args:
-            d_model: Model dimension C
-            nhead: Number of attention heads
-            dim_feedforward: FFN hidden dimension
-            dropout: Dropout probability
-            bottleneck_dim: Adapter bottleneck Ĉ
-            use_mha_adapter: Whether to include MHA-A
-            use_ffl_adapter: Whether to include FFL-A
-            max_adapters: Maximum sessions supported
-        """
+
         super().__init__()
 
         self.use_mha_adapter = use_mha_adapter
@@ -331,15 +229,7 @@ class TransformerBlockWithAdapters(nn.Module):
         mha_adapter_idx: Optional[int] = None,
         ffl_adapter_idx: Optional[int] = None
     ) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor [B, L, D]
-            mha_adapter_idx: Which MHA adapter to use (None = use betas)
-            ffl_adapter_idx: Which FFL adapter to use (None = use betas)
 
-        Returns:
-            Output tensor [B, L, D]
-        """
         # MHA sub-layer with parallel adapter (Paper Eq. 1)
         # Both MHA and adapter receive the same normalized input h_m
         residual = x
@@ -352,7 +242,7 @@ class TransformerBlockWithAdapters(nn.Module):
 
         x = residual + attn_out
 
-        # FFN sub-layer with parallel adapter (Paper Eq. 2)
+        # FFN sub-layer with parallel adapter 
         # f_m = A^t_ffl(h_m) + FFN(h_m)
         residual = x
         h = self.norm2(x)
@@ -366,12 +256,7 @@ class TransformerBlockWithAdapters(nn.Module):
         return x
 
     def add_new_session_adapters(self, bottleneck_dim: int = 1) -> Dict[str, int]:
-        """
-        Add a new MHA and FFL adapter pair for an incoming session.
 
-        Returns:
-            Dict with indices of newly created adapters
-        """
         indices = {}
 
         if self.use_mha_adapter:
@@ -398,16 +283,7 @@ class TransformerBlockWithAdapters(nn.Module):
 
 
 def count_adapter_parameters(model: nn.Module) -> Dict[str, int]:
-    """
-    Count parameters belonging to adapters vs total model parameters.
-    Used to verify the paper's claim that adapters use fewer than 2% of parameters.
 
-    Args:
-        model: Model containing adapters
-
-    Returns:
-        Dict with adapter_parameters, total_parameters, adapter_percentage
-    """
     adapter_params = 0
     total_params = 0
 
@@ -421,36 +297,3 @@ def count_adapter_parameters(model: nn.Module) -> Dict[str, int]:
         'total_parameters': total_params,
         'adapter_percentage': 100 * adapter_params / max(total_params, 1)
     }
-
-
-if __name__ == "__main__":
-    print("Testing Adapter modules...")
-
-    adapter = Adapter(input_dim=256, bottleneck_dim=1)
-    x = torch.randn(2, 100, 256)
-    out = adapter(x)
-    print(f"Adapter - Input: {x.shape}, Output: {out.shape}, Params: {adapter.get_num_parameters()}")
-
-    adapter_selector = AdapterWithSelector(input_dim=256, bottleneck_dim=1, max_adapters=5)
-    for i in range(3):
-        idx = adapter_selector.add_adapter()
-        print(f"Added adapter {idx}")
-
-    adapter_selector.set_active_adapter(1)
-    out = adapter_selector(x)
-    print(f"AdapterWithSelector output: {out.shape}")
-    print(f"Adapter info: {adapter_selector.get_adapter_info()}")
-
-    block = TransformerBlockWithAdapters(d_model=256, nhead=8, bottleneck_dim=1)
-    indices = block.add_new_session_adapters(bottleneck_dim=1)
-    print(f"New session adapter indices: {indices}")
-    block.set_active_adapters(0)
-    out = block(x)
-    print(f"Block output: {out.shape}")
-
-    param_info = count_adapter_parameters(block)
-    print(f"Adapter params: {param_info['adapter_parameters']}, "
-          f"Total: {param_info['total_parameters']}, "
-          f"Percentage: {param_info['adapter_percentage']:.2f}%")
-
-    print("All adapter modules working!")

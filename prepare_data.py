@@ -1,14 +1,3 @@
-"""
-Data Preparation Script for Incremental Speech Enhancement
-Paper: "Learning Noise Adapters for Incremental Speech Enhancement"
-
-Creates organized dataset with:
-- Session 0: Pre-training with 10 noises (40,400 training samples)
-- Sessions 1-5: Incremental learning with 1 noise each (1,212 training samples each)
-
-Author: Daniel's Final Project
-Date: 2026
-"""
 
 import os
 import numpy as np
@@ -20,27 +9,22 @@ from tqdm import tqdm
 import random
 from typing import List, Tuple, Dict
 
-# ============================================================================
 # CONFIGURATION
-# ============================================================================
-
-class Config:
-    """Configuration for data preparation - follows paper Table I exactly"""
-    
-    # ========== PATHS ==========
+class Config:    
+    #PATHS
     LIBRISPEECH_ROOT = "data/LibriSpeech"
     PRETRAIN_NOISE_DIR = "data/pretrain_noises"
     INCREMENTAL_NOISE_DIR = "data/incremental_noises"
     OUTPUT_ROOT = "data/final_data"  # Clean organized output
     
-    # ========== AUDIO PARAMETERS ==========
-    TARGET_SR = 8000  # 8 kHz as per paper
+    #AUDIO PARAMETERS
+    TARGET_SR = 8000  # 8 kHz 
     
-    # ========== SNR CONFIGURATION ==========
+    # SNR CONFIGURATION
     TRAIN_SNR_LEVELS = [-5, 0, 5, 10]  # 4 levels for training
     VAL_TEST_SNR_RANGE = (-5, 10)      # Random SNR for val/test
     
-    # ========== SESSION 0 (PRE-TRAIN) SPECIFICATIONS ==========
+    # SESSION 0 (PRE-TRAIN) SPECIFICATIONS 
     SESSION0_TRAIN_UTTERANCES = 1010
     SESSION0_TRAIN_SPEAKERS = 101
     SESSION0_VAL_UTTERANCES = 1206
@@ -48,7 +32,7 @@ class Config:
     SESSION0_TEST_UTTERANCES = 651
     SESSION0_TEST_SPEAKERS = 10
     
-    # ========== INCREMENTAL SESSIONS SPECIFICATIONS ==========
+    # INCREMENTAL SESSIONS SPECIFICATIONS
     INCREMENTAL_TRAIN_UTTERANCES = 303
     INCREMENTAL_TRAIN_SPEAKERS = 101
     INCREMENTAL_VAL_UTTERANCES = 1206
@@ -56,7 +40,7 @@ class Config:
     INCREMENTAL_TEST_UTTERANCES = 651
     INCREMENTAL_TEST_SPEAKERS = 8
     
-    # ========== NOISE ASSIGNMENTS ==========
+    # NOISE ASSIGNMENTS
     SESSION0_NOISES = [
         "babble.wav", "buccaneer1.wav", "buccaneer2.wav",
         "destroyerengine.wav", "factory1.wav", "factory2.wav",
@@ -70,52 +54,39 @@ class Config:
         {"id": 4, "noise": "machinegun.wav", "name": "machinegun"},      # NOISEX-92
     ]
     
-    # ========== REPRODUCIBILITY ==========
+    # REPRODUCIBILITY
     RANDOM_SEED = 42
 
-# ============================================================================
 # UTILITY FUNCTIONS
-# ============================================================================
 
 def set_seed(seed: int):
-    """Set random seed for reproducibility"""
+    #Set random seed for reproducibility
     random.seed(seed)
     np.random.seed(seed)
 
 def print_header(text: str):
-    """Print formatted section header"""
+    #Print formatted section header
     print(f"\n{'='*80}")
     print(f"{text.center(80)}")
     print(f"{'='*80}\n")
 
 def load_audio(file_path: str, target_sr: int = 8000) -> np.ndarray:
-    """Load and resample audio file to target sample rate"""
+    #Load and resample audio file to target sample rate
     audio, sr = librosa.load(file_path, sr=None)
     if sr != target_sr:
         audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
     return audio
 
 def save_audio(audio: np.ndarray, file_path: str, sr: int = 8000):
-    """Save audio file"""
+    #Save audio file
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     sf.write(file_path, audio, sr)
 
 def calculate_rms(audio: np.ndarray) -> float:
-    """Calculate RMS energy of audio signal"""
+    #Calculate RMS energy of audio signal
     return np.sqrt(np.mean(audio ** 2))
 
 def add_noise_at_snr(clean: np.ndarray, noise: np.ndarray, snr_db: float) -> np.ndarray:
-    """
-    Add noise to clean speech at specified SNR level
-    
-    Args:
-        clean: Clean speech signal
-        noise: Noise signal (will be adjusted to match clean length)
-        snr_db: Target SNR in dB
-    
-    Returns:
-        Noisy speech signal (clean + scaled noise)
-    """
     # Match noise length to clean speech
     if len(noise) < len(clean):
         # Repeat noise if shorter
@@ -145,28 +116,21 @@ def add_noise_at_snr(clean: np.ndarray, noise: np.ndarray, snr_db: float) -> np.
     
     return noisy
 
-# ============================================================================
 # LIBRISPEECH DATA LOADING
-# ============================================================================
 
 def get_librispeech_speakers(librispeech_root: str) -> Dict[str, List[str]]:
-    """
-    Scan LibriSpeech directory and organize files by speaker
-    
-    Returns:
-        Dictionary: {speaker_id: [list of .flac file paths]}
-    """
-    print("📚 Scanning LibriSpeech dataset...")
+
+    print(" Scanning LibriSpeech dataset")
     speakers_files = {}
     
     for subset in ["train-clean-100", "dev-clean", "test-clean"]:
         subset_path = os.path.join(librispeech_root, subset)
         
         if not os.path.exists(subset_path):
-            print(f"  ⚠️  Warning: {subset} not found, skipping...")
+            print(f"Warning: {subset} not found, skipping")
             continue
         
-        print(f"  Scanning {subset}...")
+        print(f"Scanning {subset}")
         
         for speaker_id in os.listdir(subset_path):
             speaker_path = os.path.join(subset_path, speaker_id)
@@ -187,7 +151,7 @@ def get_librispeech_speakers(librispeech_root: str) -> Dict[str, List[str]]:
     speakers_files = {k: v for k, v in speakers_files.items() if len(v) > 0}
     
     total_files = sum(len(files) for files in speakers_files.values())
-    print(f"  ✓ Found {len(speakers_files)} speakers with {total_files} total files\n")
+    print(f"Found {len(speakers_files)} speakers with {total_files} total files\n")
     
     return speakers_files
 
@@ -197,23 +161,6 @@ def select_speakers_and_files(
     num_utterances: int,
     exclude_speakers: List[str] = None
 ) -> Tuple[List[str], List[str]]:
-    """
-    Randomly select speakers and their utterances
-    
-    Strategy:
-    1. Select num_speakers random speakers (excluding already used ones)
-    2. Sample ~equal number of utterances from each speaker
-    3. Ensure exact total count matches num_utterances
-    
-    Args:
-        speakers_dict: {speaker_id: [file_paths]}
-        num_speakers: Number of speakers to select
-        num_utterances: Total utterances needed
-        exclude_speakers: Speaker IDs to exclude (avoid overlap)
-    
-    Returns:
-        (selected_speaker_ids, selected_file_paths)
-    """
     if exclude_speakers is None:
         exclude_speakers = []
     
@@ -254,9 +201,7 @@ def select_speakers_and_files(
     
     return selected_speakers, selected_files
 
-# ============================================================================
 # DATASET CREATION
-# ============================================================================
 
 def create_mixed_dataset(
     clean_files: List[str],
@@ -266,17 +211,6 @@ def create_mixed_dataset(
     config: Config,
     mix_all_noises: bool = False
 ):
-    """
-    Create one split (train/val/test) of mixed noisy+clean data
-    
-    Args:
-        clean_files: List of clean speech file paths
-        noise_files: List of noise file paths
-        output_dir: Output directory for this split
-        split_name: 'train', 'val', or 'test'
-        config: Configuration object
-        mix_all_noises: If True, mix each utterance with ALL noises (Session 0 train only)
-    """
     clean_dir = os.path.join(output_dir, split_name, "clean")
     noisy_dir = os.path.join(output_dir, split_name, "noisy")
     os.makedirs(clean_dir, exist_ok=True)
@@ -289,7 +223,7 @@ def create_mixed_dataset(
         noise_name = os.path.basename(noise_path).replace('.wav', '')
         noises[noise_name] = load_audio(noise_path, config.TARGET_SR)
     
-    # Determine SNR strategy
+    # Determine SNR 
     is_train = (split_name == "train")
     snr_levels = config.TRAIN_SNR_LEVELS if is_train else [None]  # None = random
     
@@ -359,7 +293,7 @@ def create_mixed_dataset(
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print(f"  ✓ {split_name} complete: {len(metadata)} noisy files + {len(clean_files)} clean files\n")
+    print(f"{split_name} complete: {len(metadata)} noisy files + {len(clean_files)} clean files\n")
 
 def create_session(
     session_id: int,
@@ -369,12 +303,6 @@ def create_session(
     config: Config,
     exclude_speakers: List[str] = None
 ) -> List[str]:
-    """
-    Create complete session dataset (train + val + test)
-    
-    Returns:
-        List of all speaker IDs used in this session
-    """
     if exclude_speakers is None:
         exclude_speakers = []
     
@@ -399,7 +327,7 @@ def create_session(
     print(f"  Test:  {test_utt} utterances, {test_spk} speakers\n")
     
     # Select speakers and files
-    print("📊 Selecting speakers and utterances...")
+    print("Selecting speakers and utterances.")
     
     train_speakers, train_files = select_speakers_and_files(
         speakers_dict, train_spk, train_utt, exclude_speakers
@@ -414,19 +342,19 @@ def create_session(
     test_speakers, test_files = select_speakers_and_files(
         speakers_dict, test_spk, test_utt, exclude_speakers + train_speakers + val_speakers
     )
-    print(f"  Test:  {len(test_speakers)} speakers, {len(test_files)} files\n")
+    print(f"Test:  {len(test_speakers)} speakers, {len(test_files)} files\n")
     
     # Create datasets
-    print("🎵 Creating training dataset...")
+    print("Creating training dataset.")
     create_mixed_dataset(
         train_files, noise_files, output_dir, "train", config,
         mix_all_noises=is_pretrain  # Only Session 0 mixes with all noises
     )
     
-    print("🎵 Creating validation dataset...")
+    print("Creating validation dataset.")
     create_mixed_dataset(val_files, noise_files, output_dir, "val", config)
     
-    print("🎵 Creating test dataset...")
+    print("Creating test dataset.")
     create_mixed_dataset(test_files, noise_files, output_dir, "test", config)
     
     # Save session summary
@@ -455,13 +383,10 @@ def create_session(
     with open(os.path.join(output_dir, "session_info.json"), 'w') as f:
         json.dump(summary, f, indent=2)
     
-    print(f"✅ {session_name} complete!\n")
+    print(f"{session_name} complete\n")
     
     return train_speakers + val_speakers + test_speakers
 
-# ============================================================================
-# MAIN EXECUTION
-# ============================================================================
 
 def main():
     config = Config()
@@ -469,12 +394,12 @@ def main():
     
     print_header("INCREMENTAL SPEECH ENHANCEMENT - DATA PREPARATION")
     
-    print("📋 Configuration:")
-    print(f"  Target sample rate: {config.TARGET_SR} Hz")
-    print(f"  Training SNRs: {config.TRAIN_SNR_LEVELS} dB")
-    print(f"  Val/Test SNR range: {config.VAL_TEST_SNR_RANGE} dB")
-    print(f"  Random seed: {config.RANDOM_SEED}")
-    print(f"  Output: {config.OUTPUT_ROOT}\n")
+    print("Configuration:")
+    print(f" Target sample rate: {config.TARGET_SR} Hz")
+    print(f"Training SNRs: {config.TRAIN_SNR_LEVELS} dB")
+    print(f"Val/Test SNR range: {config.VAL_TEST_SNR_RANGE} dB")
+    print(f"Random seed: {config.RANDOM_SEED}")
+    print(f"Output: {config.OUTPUT_ROOT}\n")
     
     # Create output directory
     os.makedirs(config.OUTPUT_ROOT, exist_ok=True)
@@ -485,9 +410,7 @@ def main():
     # Track used speakers to avoid overlap
     session0_speakers = []
     
-    # ========================================================================
     # SESSION 0: Pre-training with 10 noises
-    # ========================================================================
     
     session0_noises = [
         os.path.join(config.PRETRAIN_NOISE_DIR, n) for n in config.SESSION0_NOISES
@@ -506,9 +429,7 @@ def main():
         config=config
     )
     
-    # ========================================================================
-    # SESSIONS 1-5: Incremental learning
-    # ========================================================================
+    # SESSIONS 1-4: Incremental learning
     
     for sess_info in config.INCREMENTAL_SESSIONS:
         noise_path = os.path.join(config.INCREMENTAL_NOISE_DIR, sess_info["noise"])
@@ -526,15 +447,11 @@ def main():
             exclude_speakers=session0_speakers  # Exclude Session 0 speakers
         )
     
-    # ========================================================================
     # Create overall summary
-    # ========================================================================
     
-    print_header("DATA PREPARATION COMPLETE!")
+    print_header("DATA PREPARATION COMPLETE")
     
     summary = {
-        "project": "Incremental Speech Enhancement",
-        "paper": "Learning Noise Adapters for Incremental Speech Enhancement",
         "config": {
             "sample_rate_hz": config.TARGET_SR,
             "train_snr_levels_db": config.TRAIN_SNR_LEVELS,
@@ -562,12 +479,11 @@ def main():
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
     
-    print(f"📊 Dataset summary: {summary_path}")
-    print(f"📁 All data saved to: {config.OUTPUT_ROOT}")
+    print(f"Dataset summary: {summary_path}")
+    print(f"All data saved to: {config.OUTPUT_ROOT}")
     
-    print("\n" + "="*80)
-    print("🎉 SUCCESS! Ready for training!")
-    print("="*80 + "\n")
+    print("SUCCESS")
+
 
 if __name__ == "__main__":
     main()

@@ -1,12 +1,3 @@
-"""
-Evaluation Script
-
-Evaluate trained models on test sets and compare methods.
-
-Paper Reference: Section IV - Experiments
-Evaluates on cumulative test sets Z^{1,...,t}
-"""
-
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -30,19 +21,7 @@ def _forward_with_chunking(
     chunk_size: int = 32000,
     chunk_overlap: int = 8000
 ) -> torch.Tensor:
-    """
-    Forward pass with chunking for memory efficiency
-    
-    Args:
-        model: The model
-        noisy: Input audio [1, 1, T]
-        session_id: Session ID for decoder selection
-        chunk_size: Chunk size in samples
-        chunk_overlap: Overlap between chunks
-    
-    Returns:
-        Enhanced audio
-    """
+
     if noisy.shape[0] != 1:
         return model(noisy, session_id=session_id)
     
@@ -91,22 +70,7 @@ def evaluate_model_on_session(
     chunk_size: int = 32000,
     chunk_overlap: int = 8000
 ) -> Dict[str, float]:
-    """
-    Evaluate model on one session's test set
-    
-    Args:
-        model: Trained model
-        test_loader: Test data loader
-        session_id: Session ID
-        device: Device to use
-        selector: Noise selector (if using)
-        use_chunking: Whether to use chunked inference
-        chunk_size: Chunk size for chunked inference
-        chunk_overlap: Overlap for chunked inference
-    
-    Returns:
-        Dictionary with metrics
-    """
+
     model.eval()
     model.to(device)
     
@@ -196,30 +160,12 @@ def evaluate_cumulative(
     config: ProjectConfig,
     output_path: str = None
 ) -> Dict:
-    """
-    Evaluate on cumulative test sets
-    
-    Paper: "the resulting model must be evaluated using the 
-    aggregated test sets Z^{1,...,t}"
-    
-    Args:
-        model_path: Path to trained model
-        selector_path: Path to trained selector
-        data_root: Data root directory
-        session_ids: List of session IDs to evaluate
-        config: Configuration
-        output_path: Path to save results
-    
-    Returns:
-        Dictionary with all results
-    """
+
     device = config.training.device
     if device == 'cuda' and not torch.cuda.is_available():
         device = 'cpu'
     
-    print("\n" + "="*80)
-    print("CUMULATIVE EVALUATION".center(80))
-    print("="*80 + "\n")
+    print("CUMULATIVE EVALUATION")
     
     # Load model
     print(f"Loading model from: {model_path}")
@@ -319,19 +265,8 @@ def compare_methods(
     results_dir: str,
     methods: List[str] = ['baseline', 'lna']
 ) -> Dict:
-    """
-    Compare different methods
-    
-    Args:
-        results_dir: Directory containing results from different methods
-        methods: List of method names to compare
-    
-    Returns:
-        Comparison dictionary
-    """
-    print("\n" + "="*80)
-    print("METHOD COMPARISON".center(80))
-    print("="*80 + "\n")
+
+    print("METHOD COMPARISON:")
     
     results_dir = Path(results_dir)
     comparison = {}
@@ -347,9 +282,7 @@ def compare_methods(
     # Print comparison table
     if comparison:
         print("\nComparison (SI-SNR in dB):")
-        print("-" * 60)
         print(f"{'Session':<15} {'Baseline':<15} {'LNA':<15} {'Improvement':<15}")
-        print("-" * 60)
         
         for session_key in comparison[methods[0]].keys():
             session_id = session_key.split('_')[1]
@@ -435,7 +368,7 @@ def main():
         output_path=args.output
     )
     
-    print("\n✓ Evaluation complete!")
+    print("\n Evaluation complete")
 
 
 if __name__ == "__main__":
