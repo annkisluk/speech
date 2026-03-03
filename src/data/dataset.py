@@ -42,7 +42,8 @@ class SpeechEnhancementDataset(Dataset):
         split: str = "train",
         sample_rate: int = 8000,
         max_length: Optional[int] = None,
-        normalize: bool = True
+        normalize: bool = True,
+        random_crop: bool = False
     ):
         """
         Args:
@@ -51,12 +52,15 @@ class SpeechEnhancementDataset(Dataset):
             sample_rate: Target sample rate 
             max_length: Maximum audio length in samples (None = no limit)
             normalize: Whether to normalize audio to [-1, 1]
+            random_crop: If True, take a random segment instead of the first max_length samples.
+                         Critical for training — ensures different segments each epoch.
         """
         self.data_dir = Path(data_dir)
         self.split = split
         self.sample_rate = sample_rate
         self.max_length = max_length
         self.normalize = normalize
+        self.random_crop = random_crop
         
         # Paths to clean and noisy folders
         self.clean_dir = self.data_dir / split / "clean"
@@ -97,15 +101,22 @@ class SpeechEnhancementDataset(Dataset):
         noisy, _ = load_audio(str(noisy_path), self.sample_rate, self.normalize)
         clean, _ = load_audio(str(clean_path), self.sample_rate, self.normalize)
         
-        # Trim to max_length if specified
-        if self.max_length is not None:
-            noisy = noisy[:, :self.max_length]
-            clean = clean[:, :self.max_length]
-        
-        # Ensure same length 
+        # Ensure same length first
         min_len = min(noisy.shape[1], clean.shape[1])
         noisy = noisy[:, :min_len]
         clean = clean[:, :min_len]
+        
+        # Crop to max_length if specified
+        if self.max_length is not None and min_len > self.max_length:
+            if self.random_crop:
+                # Random crop: pick a random start index (different each call)
+                start = random.randint(0, min_len - self.max_length)
+            else:
+                # Deterministic: always take from the beginning
+                start = 0
+            noisy = noisy[:, start:start + self.max_length]
+            clean = clean[:, start:start + self.max_length]
+            min_len = self.max_length
         
         # Prepare info dict
         info = {
@@ -337,21 +348,24 @@ def get_session_dataloaders(
         data_dir=str(session_dir),
         split="train",
         sample_rate=sample_rate,
-        max_length=4 * sample_rate  # 4 seconds max — prevents OOM with large models
+        max_length=4 * sample_rate,  # 4 seconds max — prevents OOM with large models
+        random_crop=True  # Random segment each epoch — critical for data diversity
     )
 
     val_dataset = SpeechEnhancementDataset(
         data_dir=str(session_dir),
         split="val",
         sample_rate=sample_rate,
-        max_length=4 * sample_rate
+        max_length=4 * sample_rate,
+        random_crop=False  # Deterministic for reproducible validation
     )
 
     test_dataset = SpeechEnhancementDataset(
         data_dir=str(session_dir),
         split="test",
         sample_rate=sample_rate,
-        max_length=4 * sample_rate
+        max_length=4 * sample_rate,
+        random_crop=False  # Deterministic for reproducible test metrics
     )
     
     # Create dataloaders

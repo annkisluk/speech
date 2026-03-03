@@ -144,7 +144,7 @@ class TrainingConfig:
     weight_decay: float = 0.0
     
     # Scheduler
-    use_scheduler: bool = True
+    use_scheduler: bool = False     # Paper does NOT use LR scheduler
     scheduler_type: str = "plateau"  # Reduce on plateau
     patience: int = 3
     factor: float = 0.5
@@ -157,7 +157,7 @@ class TrainingConfig:
     max_grad_norm: float = 5.0
     
     # Early stopping
-    early_stopping_patience: int = 10
+    early_stopping_patience: int = 100  # Effectively disabled 
     
     # Checkpointing
     save_every_n_epochs: int = 1
