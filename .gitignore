@@ -211,4 +211,5 @@ __marimo__/
 /results/
 *.pt
 *.pth
-*.ziphf_upload/
+*.zip
+hf_upload/
