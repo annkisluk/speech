@@ -53,8 +53,9 @@ pip install -r requirements.txt
 
 # 2. Download and prepare data
 bash set_up_data.sh
-python prepare_data.py --mode pretrain
-python prepare_data.py --mode incremental
+python prepare_data.py                    # generate all data (pretrain + incremental)
+# or, if session 0 data already exists:
+python prepare_data.py --skip_session0    # regenerate incremental sessions only
 
 # 3. Run pipeline
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode pretrain
