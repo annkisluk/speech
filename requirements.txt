@@ -26,6 +26,9 @@ scikit-learn>=1.3.0
 # Configuration
 pyyaml>=6.0
 
+# HuggingFace Hub (checkpoint download/upload)
+huggingface_hub>=0.20.0
+
 
 
 
