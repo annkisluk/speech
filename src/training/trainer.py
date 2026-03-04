@@ -27,7 +27,8 @@ class Trainer:
         use_amp: bool = False,
         log_dir: Optional[str] = None,
         checkpoint_dir: Optional[str] = None,
-        max_grad_norm: float = 5.0
+        max_grad_norm: float = 5.0,
+        val_session_id: Optional[int] = None  # session to use when val set has no session_id in info
     ):
 
         self.model = model.to(device)
@@ -36,6 +37,7 @@ class Trainer:
         self.scheduler = scheduler
         self.use_amp = use_amp
         self.max_grad_norm = max_grad_norm
+        self.val_session_id = val_session_id
         
         # Directories
         self.log_dir = Path(log_dir) if log_dir else Path("logs")
@@ -223,6 +225,13 @@ class Trainer:
                         out = val_model(noisy_sess, session_id=sess_id)
                     for k, orig_idx in enumerate(indices):
                         enhanced[orig_idx] = out[k]
+            elif self.val_session_id is not None:
+                # Single-session val: use the known session adapter
+                if self.use_amp:
+                    with torch.amp.autocast("cuda"):
+                        enhanced = val_model(noisy, session_id=self.val_session_id)
+                else:
+                    enhanced = val_model(noisy, session_id=self.val_session_id)
             else:
                 if self.use_amp:
                     with torch.amp.autocast("cuda"):

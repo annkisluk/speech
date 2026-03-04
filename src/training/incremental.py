@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 
 from ..models.lna_model import LNAModel
-from ..data.dataset import get_session_dataloaders, MultiSessionDataset, create_dataloader
+from ..data.dataset import get_session_dataloaders, create_dataloader
 from ..training.trainer import Trainer, setup_optimizer, setup_scheduler
 from ..selectors.noise_selector import create_selector
 from ..utils.config import ProjectConfig, get_default_config
@@ -109,43 +109,21 @@ def train_incremental_session(
         sample_rate=config.data.sample_rate
     )
 
-    # Cumulative val/test loaders: all sessions 0..session_id (paper: Z^{1,...,t})
-    cumulative_session_ids = list(range(0, session_id + 1))
-    print(f"\nBuilding cumulative val/test sets for sessions {cumulative_session_ids}...")
-
-    cum_val_dataset = MultiSessionDataset(
+    # Validation: single-session only (current noise domain, 1206 samples)
+    # Paper: model is validated on V^t (current domain only) during training
+    _, val_loader, _ = get_session_dataloaders(
         data_root=data_root,
-        session_ids=cumulative_session_ids,
-        split="val",
-        sample_rate=config.data.sample_rate,
-        max_length=4 * config.data.sample_rate  # Cap at 4s — same as single-session val
-    )
-    val_loader = create_dataloader(
-        cum_val_dataset,
-        batch_size=config.data.val_batch_size,
-        shuffle=False,
+        session_id=session_id,
+        batch_size_train=config.data.train_batch_size,
+        batch_size_val=config.data.val_batch_size,
+        batch_size_test=config.data.test_batch_size,
         num_workers=config.data.num_workers,
-        pin_memory=config.data.pin_memory
-    )
-
-    cum_test_dataset = MultiSessionDataset(
-        data_root=data_root,
-        session_ids=cumulative_session_ids,
-        split="test",
-        sample_rate=config.data.sample_rate,
-        max_length=4 * config.data.sample_rate  # Cap at 4s — same as single-session test
-    )
-    test_loader = create_dataloader(
-        cum_test_dataset,
-        batch_size=config.data.test_batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        pin_memory=config.data.pin_memory
+        pin_memory=config.data.pin_memory,
+        sample_rate=config.data.sample_rate
     )
 
     print(f"  Train batches: {len(train_loader)}")
-    print(f"  Cumulative val batches: {len(val_loader)} ({len(cum_val_dataset)} samples)")
-    print(f"  Cumulative test batches: {len(test_loader)} ({len(cum_test_dataset)} samples)")
+    print(f"  Val batches: {len(val_loader)} ({len(val_loader.dataset)} samples, session {session_id} only)")
     
     # Setup optimizer 
     optimizer = setup_optimizer(
@@ -195,7 +173,8 @@ def train_incremental_session(
         use_amp=config.training.use_amp,
         log_dir=str(log_dir),
         checkpoint_dir=str(checkpoint_dir),
-        max_grad_norm=config.training.max_grad_norm
+        max_grad_norm=config.training.max_grad_norm,
+        val_session_id=session_id  # single-session val: use current session's adapter
     )
     
     # Verify model is on correct device
@@ -335,6 +314,111 @@ def train_incremental_session(
     print(f"\n Session {session_id} training complete")
     
     return history, model_checkpoint_path, selector_save_path
+
+
+def fit_all_selectors(
+    config: ProjectConfig,
+    pretrained_model_path: str,
+    data_root: str = "data/final_data",
+    session_ids: list = [1, 2, 3, 4]
+):
+    """Refit K-Means selectors from already-trained model checkpoints.
+    Useful when selector .pkl files are missing but model .pt files exist.
+    Must be run in session order (1→2→3→4) since selector is cumulative.
+    """
+    device = config.training.device
+    if device == 'cuda' and not torch.cuda.is_available():
+        device = 'cpu'
+
+    current_selector_path = None
+
+    for session_id in session_ids:
+        print(f"\n{'='*60}")
+        print(f"Fitting selector for session {session_id}")
+        print(f"{'='*60}")
+
+        checkpoint_dir = Path(config.checkpoint_dir) / f"session{session_id}_incremental"
+        model_path = checkpoint_dir / f"lna_session{session_id}.pt"
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
+
+        # Build model with all adapters up to this session
+        model = LNAModel(
+            n_basis=config.sepformer.N,
+            kernel_size=config.sepformer.L,
+            num_layers=config.sepformer.num_layers,
+            num_blocks=config.sepformer.num_blocks,
+            nhead=config.sepformer.nhead,
+            dim_feedforward=config.sepformer.d_ffn,
+            dropout=config.sepformer.dropout,
+            adapter_bottleneck_dim=config.adapter.bottleneck_dim,
+            max_sessions=6
+        )
+        for s in range(1, session_id + 1):
+            model.add_new_session(session_id=s, bottleneck_dim=config.adapter.bottleneck_dim)
+
+        # Support both trainer checkpoints (best_model.pt) and model checkpoints (lna_session{N}.pt)
+        ck = torch.load(str(model_path), map_location='cpu')
+        if 'model_state_dict' in ck:
+            state_dict = ck['model_state_dict']
+            # Strip 'module.' prefix if saved under DataParallel
+            state_dict = {k.replace('module.', '', 1): v for k, v in state_dict.items()}
+            model.load_state_dict(state_dict, strict=False)
+            print(f"  Loaded trainer checkpoint: {model_path}")
+        else:
+            model.load_checkpoint(str(model_path))
+            print(f"  Loaded model checkpoint: {model_path}")
+        model.to(device)
+        model.eval()
+
+        # Load or create cumulative selector
+        selector_kwargs = {'feature_dim': config.sepformer.N}
+        if config.selector.selector_type == 'kmeans':
+            selector_kwargs['n_clusters'] = config.selector.n_clusters
+        selector = create_selector(selector_type=config.selector.selector_type, **selector_kwargs)
+        if current_selector_path and Path(current_selector_path).exists():
+            selector.load(current_selector_path)
+            print(f"  Loaded previous selector: {current_selector_path}")
+
+        # Load train data for this session
+        train_loader, _, _ = get_session_dataloaders(
+            data_root=data_root,
+            session_id=session_id,
+            batch_size_train=config.data.train_batch_size,
+            batch_size_val=config.data.val_batch_size,
+            batch_size_test=config.data.test_batch_size,
+            num_workers=config.data.num_workers,
+            pin_memory=False,
+            sample_rate=config.data.sample_rate
+        )
+
+        # Extract encoder features
+        all_features = []
+        with torch.no_grad():
+            for noisy, clean, lengths, info in tqdm(train_loader, desc=f"  Extracting features"):
+                noisy = noisy.to(device)
+                features = model.get_encoder_features(noisy)
+                enc_lengths = (lengths - 16) // 8 + 1
+                B_feat, N_feat, L_feat = features.shape
+                for b in range(B_feat):
+                    real_len = min(enc_lengths[b].item(), L_feat)
+                    feat = features[b, :, :real_len].mean(dim=1)
+                    all_features.append(feat.cpu().numpy().reshape(1, -1))
+
+        all_features = np.concatenate(all_features, axis=0)
+        print(f"  Extracted {all_features.shape[0]} feature vectors")
+
+        # Fit and save
+        selector.fit_session(all_features, session_id=session_id)
+        selector_save_path = checkpoint_dir / f"selector_upto_session{session_id}.pkl"
+        selector.save(str(selector_save_path))
+        print(f"  Selector saved: {selector_save_path}")
+
+        current_selector_path = str(selector_save_path)
+        del model
+
+    print("\nAll selectors fitted.")
+    return current_selector_path
 
 
 def train_all_incremental_sessions(

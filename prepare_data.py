@@ -1,5 +1,7 @@
 
 import os
+import shutil
+import argparse
 import numpy as np
 import soundfile as sf
 import librosa
@@ -30,7 +32,7 @@ class Config:
     SESSION0_VAL_UTTERANCES = 1206
     SESSION0_VAL_SPEAKERS = 10
     SESSION0_TEST_UTTERANCES = 651
-    SESSION0_TEST_SPEAKERS = 10
+    SESSION0_TEST_SPEAKERS = 8
     
     # INCREMENTAL SESSIONS SPECIFICATIONS
     INCREMENTAL_TRAIN_UTTERANCES = 303
@@ -164,20 +166,24 @@ def select_speakers_and_files(
     if exclude_speakers is None:
         exclude_speakers = []
     
-    # Filter available speakers
-    available = {k: v for k, v in speakers_dict.items() 
-                 if k not in exclude_speakers and len(v) > 0}
+    # Each selected speaker must supply ceil(num_utterances / num_speakers) utterances,
+    # so pre-filter to speakers that have at least that many files.
+    min_files_per_speaker = (num_utterances + num_speakers - 1) // num_speakers
+    available = {
+        k: v for k, v in speakers_dict.items()
+        if k not in exclude_speakers and len(v) >= min_files_per_speaker
+    }
     
     if len(available) < num_speakers:
         raise ValueError(
-            f"Not enough speakers! Need {num_speakers}, "
-            f"but only {len(available)} available after exclusions"
+            f"Not enough speakers with >= {min_files_per_speaker} utterances! "
+            f"Need {num_speakers}, but only {len(available)} qualify after exclusions."
         )
     
     # Randomly select speakers
     selected_speakers = random.sample(list(available.keys()), num_speakers)
     
-    # Calculate utterances per speaker
+    # Calculate utterances per speaker (distribute evenly)
     base_count = num_utterances // num_speakers
     extra_count = num_utterances % num_speakers
     
@@ -186,18 +192,7 @@ def select_speakers_and_files(
     for i, speaker_id in enumerate(selected_speakers):
         # First 'extra_count' speakers get one extra utterance
         count = base_count + (1 if i < extra_count else 0)
-        
-        speaker_files = speakers_dict[speaker_id]
-        
-        if len(speaker_files) >= count:
-            # Enough files, sample exactly
-            selected_files.extend(random.sample(speaker_files, count))
-        else:
-            # Not enough files, take all
-            selected_files.extend(speaker_files)
-    
-    # Trim to exact count (in rare case of overflow)
-    selected_files = selected_files[:num_utterances]
+        selected_files.extend(random.sample(available[speaker_id], count))
     
     return selected_speakers, selected_files
 
@@ -213,6 +208,9 @@ def create_mixed_dataset(
 ):
     clean_dir = os.path.join(output_dir, split_name, "clean")
     noisy_dir = os.path.join(output_dir, split_name, "noisy")
+    # Remove stale files from any previous run with different utterance counts
+    shutil.rmtree(clean_dir, ignore_errors=True)
+    shutil.rmtree(noisy_dir, ignore_errors=True)
     os.makedirs(clean_dir, exist_ok=True)
     os.makedirs(noisy_dir, exist_ok=True)
     
@@ -223,9 +221,11 @@ def create_mixed_dataset(
         noise_name = os.path.basename(noise_path).replace('.wav', '')
         noises[noise_name] = load_audio(noise_path, config.TARGET_SR)
     
-    # Determine SNR 
+    # Determine SNR
     is_train = (split_name == "train")
-    snr_levels = config.TRAIN_SNR_LEVELS if is_train else [None]  # None = random
+    # Train: all 4 discrete SNR levels per utterance (×4 samples)
+    # Val/test: one randomly chosen discrete SNR level per utterance (×1 sample)
+    snr_levels = config.TRAIN_SNR_LEVELS if is_train else ["random_discrete"]
     
     # Calculate expected output count
     if mix_all_noises:
@@ -264,9 +264,8 @@ def create_mixed_dataset(
             
             for snr in snr_levels:
                 # Determine actual SNR value
-                if snr is None:  # Random SNR for val/test
-                    snr_value = random.uniform(config.VAL_TEST_SNR_RANGE[0], 
-                                              config.VAL_TEST_SNR_RANGE[1])
+                if snr == "random_discrete":  # Random discrete SNR for val/test
+                    snr_value = random.choice(config.TRAIN_SNR_LEVELS)
                 else:
                     snr_value = snr
                 
@@ -352,10 +351,12 @@ def create_session(
     )
     
     print("Creating validation dataset.")
-    create_mixed_dataset(val_files, noise_files, output_dir, "val", config)
+    create_mixed_dataset(val_files, noise_files, output_dir, "val", config,
+                         mix_all_noises=is_pretrain)
     
     print("Creating test dataset.")
-    create_mixed_dataset(test_files, noise_files, output_dir, "test", config)
+    create_mixed_dataset(test_files, noise_files, output_dir, "test", config,
+                         mix_all_noises=is_pretrain)
     
     # Save session summary
     summary = {
@@ -388,7 +389,7 @@ def create_session(
     return train_speakers + val_speakers + test_speakers
 
 
-def main():
+def main(skip_session0: bool = False):
     config = Config()
     set_seed(config.RANDOM_SEED)
     
@@ -397,9 +398,11 @@ def main():
     print("Configuration:")
     print(f" Target sample rate: {config.TARGET_SR} Hz")
     print(f"Training SNRs: {config.TRAIN_SNR_LEVELS} dB")
-    print(f"Val/Test SNR range: {config.VAL_TEST_SNR_RANGE} dB")
+    print(f"Val/Test SNR: random discrete from {config.TRAIN_SNR_LEVELS} dB")
     print(f"Random seed: {config.RANDOM_SEED}")
-    print(f"Output: {config.OUTPUT_ROOT}\n")
+    print(f"Output: {config.OUTPUT_ROOT}")
+    if skip_session0:
+        print("  --skip_session0: Session 0 will NOT be regenerated.\n")
     
     # Create output directory
     os.makedirs(config.OUTPUT_ROOT, exist_ok=True)
@@ -410,24 +413,38 @@ def main():
     # Track used speakers to avoid overlap
     session0_speakers = []
     
-    # SESSION 0: Pre-training with 10 noises
-    
-    session0_noises = [
-        os.path.join(config.PRETRAIN_NOISE_DIR, n) for n in config.SESSION0_NOISES
-    ]
-    
-    # Verify files exist
-    missing = [f for f in session0_noises if not os.path.exists(f)]
-    if missing:
-        raise FileNotFoundError(f"Missing noise files: {missing}")
-    
-    session0_speakers = create_session(
-        session_id=0,
-        session_name="session0_pretrain",
-        noise_files=session0_noises,
-        speakers_dict=speakers_dict,
-        config=config
-    )
+    if skip_session0:
+        # Load session0 speakers from existing session_info.json
+        s0_info_path = os.path.join(config.OUTPUT_ROOT, "session0_pretrain", "session_info.json")
+        if not os.path.exists(s0_info_path):
+            raise FileNotFoundError(
+                f"Cannot skip session 0: {s0_info_path} not found. "
+                "Run without --skip_session0 first."
+            )
+        with open(s0_info_path) as f:
+            s0_info = json.load(f)
+        session0_speakers = (
+            s0_info["train"]["speakers"]
+            + s0_info["val"]["speakers"]
+            + s0_info["test"]["speakers"]
+        )
+        print(f"  Loaded {len(session0_speakers)} session 0 speakers from existing info.")
+    else:
+        # SESSION 0: Pre-training with 10 noises
+        session0_noises = [
+            os.path.join(config.PRETRAIN_NOISE_DIR, n) for n in config.SESSION0_NOISES
+        ]
+        missing = [f for f in session0_noises if not os.path.exists(f)]
+        if missing:
+            raise FileNotFoundError(f"Missing noise files: {missing}")
+        
+        session0_speakers = create_session(
+            session_id=0,
+            session_name="session0_pretrain",
+            noise_files=session0_noises,
+            speakers_dict=speakers_dict,
+            config=config
+        )
     
     # SESSIONS 1-4: Incremental learning
     
@@ -485,5 +502,15 @@ def main():
     print("SUCCESS")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Prepare speech enhancement data")
+    parser.add_argument(
+        "--skip_session0", action="store_true",
+        help="Skip session 0 (pretrain) generation — useful when pretrain data already exists"
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+    main(skip_session0=args.skip_session0)

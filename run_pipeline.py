@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.training.pretrain import train_pretrain
-from src.training.incremental import train_all_incremental_sessions
+from src.training.incremental import train_all_incremental_sessions, fit_all_selectors
 from src.evaluation.evaluate import evaluate_cumulative
 from src.utils.config import get_default_config
 
@@ -86,23 +86,30 @@ def run_pipeline(
         print(f"  Final model: {final_model_path}")
         print(f"  Final selector: {final_selector_path}")
     
+    # Step 2b: Fit selectors only (when model checkpoints exist but selector .pkl files are missing)
+    if mode in ["selectors"]:
+        print("# STEP 2b: FIT SELECTORS FROM EXISTING CHECKPOINTS".center(78) + " #")
+        final_selector_path = fit_all_selectors(
+            config=config,
+            pretrained_model_path=str(pretrained_model_path),
+            data_root=data_root,
+            session_ids=[1, 2, 3, 4]
+        )
+        print(f"\n Selectors fitted. Final selector: {final_selector_path}")
+
     # Step 3: Evaluation
     if mode in ["all", "evaluate"]:
         print("# STEP 3: EVALUATION".center(78) + " #")
         
+        checkpoint_dir = Path(config.checkpoint_dir)
+        # Verify at least the final session checkpoint exists
         if not final_model_path.exists():
             print(f"Error: Trained model not found: {final_model_path}")
             print("run incremental training first")
             return
         
-        if not final_selector_path.exists():
-            print(f"Error: Selector not found: {final_selector_path}")
-            print("run incremental training first")
-            return
-        
         results = evaluate_cumulative(
-            model_path=str(final_model_path),
-            selector_path=str(final_selector_path),
+            checkpoint_dir=str(checkpoint_dir),
             data_root=data_root,
             session_ids=[1, 2, 3, 4],
             config=config,
@@ -139,7 +146,7 @@ Examples:
         "--mode",
         type=str,
         default="all",
-        choices=["all", "pretrain", "incremental", "evaluate"],
+        choices=["all", "pretrain", "incremental", "selectors", "evaluate"],
         help="Which part of pipeline to run"
     )
     parser.add_argument(
