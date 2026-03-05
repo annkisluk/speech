@@ -99,31 +99,30 @@ class AdapterConfig:
 
 @dataclass
 class SelectorConfig:
-    """
-    Noise Selector configuration
-    """
-    # Selector type 
-    selector_type: str = "kmeans"  # Options: "kmeans", "meanshift", "gmm"
+    """Noise selector configuration"""
+    selector_type: str = "kmeans"     # Options: "kmeans", "meanshift"
+    use_mean_pooling: bool = True     # Use mean-pooled encoder output as feature
     
-    # K-Means parameters 
-    n_clusters: int = 20          
+    # K-Means specific
+    n_clusters: int = 20               # Number of clusters (k)
     
-    # Mean-Shift parameters 
-    bandwidth: Optional[float] = None  # Auto-estimate if None
+    # MeanShift specific
+    bandwidth: Optional[float] = None  # Bandwidth for RBF kernel. If None, estimated automatically.
     
-    # GMM parameters 
+    # GMM specific
     n_components: int = 20
     covariance_type: str = "full"
     
     # Feature extraction
-    use_mean_pooling: bool = True     
-    feature_dim: int = 256            
+    feature_dim: int = 256
     
     # Clustering algorithm parameters
     random_state: int = 42
     max_iter: int = 300
-
-
+    
+    def __post_init__(self):
+        if self.selector_type not in ["kmeans", "meanshift"]:
+            raise ValueError(f"Unsupported selector_type: {self.selector_type}")
 @dataclass
 class TrainingConfig:
     """

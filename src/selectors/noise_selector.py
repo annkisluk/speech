@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 from abc import ABC, abstractmethod
@@ -63,7 +62,8 @@ class BaseNoiseSelector(ABC):
         self.cluster_centers = state['cluster_centers']
         self.num_sessions = state['num_sessions']
         
-        print(f"Selector loaded: {path}")
+        saved_type = state.get('selector_type', 'unknown')
+        print(f"Selector loaded: {path} (saved as {saved_type})")
 
 
 class KMeansSelector(BaseNoiseSelector):
@@ -160,74 +160,92 @@ class KMeansSelector(BaseNoiseSelector):
 
 
 class MeanShiftSelector(BaseNoiseSelector):
+    """Selector using MeanShift clustering.
+    
+    Unlike K-Means, MeanShift automatically discovers the number of clusters.
+    For each session, it finds cluster centers in the feature space.
+    At prediction time, it finds the nearest cluster center across all sessions.
+    """
+
     def __init__(
         self,
         feature_dim: int = 256,
-        bandwidth: Optional[float] = None,
-        quantile: float = 0.3,
-        n_samples: int = 500
+        bandwidth: float = None,
     ):
         super().__init__(feature_dim)
-        self.bandwidth = bandwidth
-        self.quantile = quantile
-        self.n_samples = n_samples
-        self.meanshift_models = {}
-    
+        self.bandwidth = bandwidth  # None = auto-estimate per session
+        self.meanshift_models = {}  # {session_id: MeanShift model}
+
     def fit_session(
         self,
         features: np.ndarray,
         session_id: int
     ) -> np.ndarray:
-        print(f"Fitting Mean-Shift for session {session_id}:")
+        """
+        Fit MeanShift on features from one domain/session.
+        Stores the discovered cluster centers for this session.
+        """
+        print(f"Fitting MeanShift for session {session_id}:")
         print(f"  Features shape: {features.shape}")
-        
+
         if features.ndim == 1:
             features = features.reshape(-1, self.feature_dim)
-        
+
         # Estimate bandwidth if not provided
-        bandwidth = self.bandwidth
-        if bandwidth is None:
-            # Subsample for efficiency
-            n_samples = min(self.n_samples, len(features))
-            sample_idx = np.random.choice(len(features), n_samples, replace=False)
-            bandwidth = estimate_bandwidth(
-                features[sample_idx],
-                quantile=self.quantile
-            )
-            print(f"  Estimated bandwidth: {bandwidth:.4f}")
-        
-        # Fit Mean-Shift
-        meanshift = MeanShift(bandwidth=bandwidth, bin_seeding=True)
-        meanshift.fit(features)
-        
-        # Store cluster centers
-        self.cluster_centers[session_id] = meanshift.cluster_centers_
-        self.meanshift_models[session_id] = meanshift
+        bw = self.bandwidth
+        if bw is None:
+            # For high-dimensional data (256-dim encoder features), sklearn's
+            # estimate_bandwidth can produce values too small for bin_seeding.
+            # Use median pairwise distance as a robust, data-adaptive bandwidth.
+            from sklearn.metrics import pairwise_distances
+            n_sub = min(500, len(features))
+            idx = np.random.choice(len(features), n_sub, replace=False)
+            pairwise = pairwise_distances(features[idx])
+            median_dist = np.median(pairwise[pairwise > 0])
+            bw = median_dist
+            print(f"  Median pairwise distance: {median_dist:.4f}")
+            print(f"  Using bandwidth: {bw:.4f}")
+
+        # bin_seeding=False uses actual data points as seeds (reliable in high-dim).
+        # bin_seeding=True bins the space and fails in high dimensions.
+        ms = MeanShift(
+            bandwidth=bw,
+            bin_seeding=False,
+            n_jobs=-1
+        )
+        ms.fit(features)
+
+        # Store cluster centers and model
+        self.cluster_centers[session_id] = ms.cluster_centers_
+        self.meanshift_models[session_id] = ms
         self.num_sessions = max(self.num_sessions, session_id + 1)
         self.is_fitted = True
-        
-        print(f"  Found {len(meanshift.cluster_centers_)} clusters (automatic)")
-        
-        return meanshift.cluster_centers_
-    
+
+        n_clusters_found = len(ms.cluster_centers_)
+        print(f"  Found {n_clusters_found} clusters")
+
+        return ms.cluster_centers_
+
     def predict(self, features: np.ndarray) -> int:
+        """Predict session ID for a single feature vector via nearest cluster center."""
         if not self.is_fitted:
-            raise ValueError("Selector not fitted")
-        
+            raise ValueError("Selector not fitted. Call fit_session first.")
+
         if features.ndim > 1:
             features = features.flatten()
-        
+
+        # Same logic as KMeansSelector: find nearest cluster center across all sessions
         min_distance = float('inf')
         best_session = 0
-        
+
         for session_id, centers in self.cluster_centers.items():
             distances = np.linalg.norm(centers - features, axis=1)
             min_dist_to_session = np.min(distances)
-            
+
             if min_dist_to_session < min_distance:
                 min_distance = min_dist_to_session
                 best_session = session_id
-        
+
         return best_session
 
 

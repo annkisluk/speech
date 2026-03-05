@@ -27,17 +27,21 @@ def _find_latest_checkpoint(checkpoint_dir: Path) -> Path:
 def run_pipeline(
     mode: str = "all",
     data_root: str = "data/final_data",
-    device: str = "cuda"
+    device: str = "cuda",
+    selector_type: str = None
 ):
     # Load configuration
     config = get_default_config()
     config.training.device = device
+    if selector_type:
+        config.selector.selector_type = selector_type
     
     print("LNA TRAINING PIPELINE")
     
     print(f"Mode: {mode}")
     print(f"Data root: {data_root}")
     print(f"Device: {device}")
+    print(f"Selector: {config.selector.selector_type}")
     print()
     
     # Paths
@@ -162,6 +166,13 @@ Examples:
         choices=["cuda", "cpu", "mps"],
         help="Device to use for training"
     )
+    parser.add_argument(
+        "--selector_type",
+        type=str,
+        default=None,
+        choices=["kmeans", "meanshift"],
+        help="Noise selector algorithm (default: kmeans)"
+    )
     
     args = parser.parse_args()
     
@@ -169,7 +180,8 @@ Examples:
         run_pipeline(
             mode=args.mode,
             data_root=args.data_root,
-            device=args.device
+            device=args.device,
+            selector_type=args.selector_type
         )
     except KeyboardInterrupt:
         print("\n\nPipeline interrupted by user")
