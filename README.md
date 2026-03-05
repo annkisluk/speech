@@ -40,7 +40,7 @@ src/
   models/               # LNAModel, SepFormer encoder/decoder, Adapters
   training/             # Pretraining and incremental training loops
   data/                 # Dataset classes and dataloaders
-  selectors/            # K-Means noise selector
+  selectors/            # Noise selectors (K-Means, MeanShift)
   evaluation/           # Metrics (SI-SNR, SDR, PESQ) and evaluation loop
   utils/                # Audio I/O, config dataclasses
 ```
@@ -60,6 +60,11 @@ python prepare_data.py --skip_session0    # regenerate incremental sessions only
 # 3. Run pipeline
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode pretrain
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode incremental
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode evaluate
+
+# To use MeanShift selector instead of K-Means (default):
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode incremental --selector_type meanshift
+# Evaluation auto-detects the saved selector type — no flag needed:
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python run_pipeline.py --mode evaluate
 ```
 
@@ -90,7 +95,7 @@ Val/test use one randomly-drawn discrete SNR per sample. Incremental val uses th
 
 Evaluation protocol: after session t, test domains 1..t separately (651 samples each) using checkpoint Θ_t, then average.
 
-### Per-domain SI-SNR (dB) after each session
+### K-Means selector (k=20, default)
 
 | After session | Alarm | Cough | Destr. Ops | Machine Gun | Avg SI-SNR | Avg Selector Acc |
 |:---:|:---:|:---:|:---:|:---:|:---:|:---:|
@@ -99,7 +104,16 @@ Evaluation protocol: after session t, test domains 1..t separately (651 samples 
 | 3 | 13.64 | 11.22 | 11.86 | — | 12.24 | 67.3% |
 | 4 | 12.55 | 9.41 | 11.47 | 14.67 | **12.02** | 59.0% |
 
-Paper (WSJ0) reports LNA avg 16.46 dB. The ~4 dB gap is expected: LibriSpeech is far more acoustically diverse than WSJ0, making the K-Means noise selector harder to train and reducing routing accuracy.
+### MeanShift selector (auto bandwidth)
+
+| After session | Alarm | Cough | Destr. Ops | Machine Gun | Avg SI-SNR | Avg Selector Acc |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 1 | 16.23 | — | — | — | 16.23 | 100.0% |
+| 2 | 13.27 | 13.95 | — | — | 13.61 | 79.0% |
+| 3 | 12.50 | 13.02 | 11.44 | — | 12.32 | 67.2% |
+| 4 | 12.34 | 11.97 | 11.36 | 13.63 | **12.33** | 61.5% |
+
+Paper (WSJ0) reports LNA avg 16.46 dB. The ~4 dB gap is expected: LibriSpeech is far more acoustically diverse than WSJ0. Both selector types yield similar final performance, confirming the adapter training — not the selector — drives quality.
 
 ## Architecture
 
@@ -109,7 +123,7 @@ Paper (WSJ0) reports LNA avg 16.46 dB. The ~4 dB gap is expected: LibriSpeech is
   - Decoder: `ConvTranspose1d(256, 1, k=16, s=8)`
 - **Adapters**: Ĉ=1 bottleneck, parallel MHA + FFL adapters in all 32 transformer layers
   - ~513 params/adapter × 64 adapters/session ≈ 32,832 params per session (0.128% of backbone)
-- **Selector**: K-Means (k=20) on mean-pooled encoder features
+- **Selector**: K-Means (k=20, default) or MeanShift (auto bandwidth) on mean-pooled encoder features. Select via `--selector_type {kmeans,meanshift}`
 
 ## Key Implementation Notes
 
